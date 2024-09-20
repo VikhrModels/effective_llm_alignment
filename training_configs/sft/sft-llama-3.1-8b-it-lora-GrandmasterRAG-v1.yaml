@@ -1,0 +1,48 @@
+model_name_or_path: "unsloth/Meta-Llama-3.1-8B-Instruct"
+dataset:
+  - "Vikhrmodels/GrandMaster-PRO-MAX"
+  - "Vikhrmodels/Grounded-RAG-RU-v2"
+train_only_on_completions: True
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+num_train_epochs: 1
+save_strategy: "steps"
+save_steps: 400
+save_total_limit: 6
+learning_rate: 0.00004
+gradient_accumulation_steps: 8
+gradient_checkpointing: True
+logging_steps: 1
+remove_unused_columns: False
+dataloader_num_workers: 2
+save_only_model: True
+generate_eval_examples: True
+use_liger: True
+max_seq_length: 16000
+evaluation_strategy: "steps"
+eval_steps: 400
+run_name: "sft-grndmrag-llama-3.1-unsloth-lora-256-qkvogudlm-v1"
+output_dir: "/home/models/sft-grndmrag-llama-3.1-unsloth-lora-256-qkvogudlm-v1"
+warmup_steps: 20
+report_to: "wandb"
+conversation_field: "conversation"
+bf16: True
+seed: 42
+logging_first_step: True
+use_peft: True
+lora_target_modules:
+  - "k_proj"
+  - "v_proj"
+  - "q_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+  - "lm_head"
+lora_r: 256
+lora_alpha: 256
+assistant_message_template: "<|start_header_id|>assistant<|end_header_id|>\n\n"
+pad_token: "<|reserved_special_token_0|>"
+eos_token: "<|eot_id|>"
+chat_template: "{{ bos_token }}{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+force_chat_template: True
