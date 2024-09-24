@@ -22,7 +22,7 @@ This is a **super customizable**, **concise**, **user-friendly**, and **efficien
 - **SMPO:** Our own most stable alignment method (details below)
 - **Non-pair Reward Modeling:** With margins and centring support from TRL
 - **Rejection Sampling:** Preference dataset generation using vLLM and RM
-- **LLM scoring using RM:** Use RM model and your dataset to caluclate RM scores statistics to compare models.
+- **LLM scoring using RM:** Use RM model and your dataset to calculate RM scores statistics to compare models.
 - **NER, CLIP, Classification, STS:** Not native to this toolkit but tested (Work in Progress)
 
 ### 📌 Additional Features
