@@ -8,7 +8,6 @@ from rich.console import Console
 from rich.table import Table
 from tqdm import tqdm
 import torch
-from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from datasets import load_dataset
 
@@ -59,16 +58,25 @@ def print_scores_table(results, llm_model_path, rm_model_path):
 
     # Print the table
     console.print(table)
+    
+
+def preprocess_row(row, gen_prompt, llm_answer_column):
+    conversation = []
+    sys = gen_prompt + row["topic"]
+    conversation = [{"role": "system", "content": sys}]
+    conversation.append(
+        {
+            "role": "assistant",
+            "content": row[llm_answer_column]
+        }
+    )
+    return conversation
 
 
 def main(args):
+    gen_prompt = """Сгенерируй текст по топику: """ # change it to kostya's later
     # Проверка доступности устройства
     device = torch.device(f"cuda:{args.rm_gpu_index}" if torch.cuda.is_available() and args.rm_gpu_index else "cpu")
-
-    # Загрузка LLM модели и токенизатора
-    llm = LLM(model=args.llm_model_path, dtype='half', max_model_len=args.max_seq_len, tensor_parallel_size=args.llm_tp)
-    llm_tokenizer = AutoTokenizer.from_pretrained(args.llm_model_path)
-    llm_tokenizer.model_max_length = args.max_seq_len
 
     # Загрузка RM модели и токенизатора с использованием SDPA
     rm_model = AutoModelForSequenceClassification.from_pretrained(args.rm_model_path,
@@ -96,23 +104,7 @@ def main(args):
         if idx < start_idx:
             continue
 
-        conversation = row[args.conversation_column]
-
-        # Удаление последнего ответа ассистента
-        if conversation[-1]['role'] == 'assistant':
-            conversation = conversation[:-1]
-
-        # Генерация промптов для LLM
-        prompt = llm_tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-
-        # Параметры семплирования
-        sampling_params = SamplingParams(temperature=args.sampling_temperature, max_tokens=2048)
-
-        # Генерация ответов
-        outputs = llm.generate([prompt], sampling_params, use_tqdm=False)[0]
-
-        generated_text = outputs.outputs[0].text.strip()
-        generated_conversation = conversation + [{'role': 'assistant', 'content': generated_text}]
+        generated_conversation = preprocess_row(row, gen_prompt, args.testee_column)
 
         # Оценка исходного диалога и сгенерированных диалогов с помощью RM модели
         templated_conversation = rm_tokenizer.apply_chat_template(generated_conversation,
@@ -130,7 +122,7 @@ def main(args):
         result = {
             'conversation': generated_conversation,
             'rm_score': score,
-            'completion_len': len(generated_text)
+            'completion_len': len(generated_conversation[-1]["content"])
         }
         results.append(result)
 
@@ -156,6 +148,8 @@ if __name__ == "__main__":
     parser.add_argument("--sampling_temperature", type=float, default=0.0, help="Temperature for sampling")
     parser.add_argument("--results_save_path", type=str, required=False,
                         help="Path to save the output dataset (jsonl format)")
+    parser.add_argument("--testee_column", type=str, required=False,
+                        help="column with llm answer")
 
     args = parser.parse_args()
 
