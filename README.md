@@ -128,6 +128,13 @@ You need to select a DeepSpeed config + a training config + the script itself. H
 PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/stage2_config.yaml scripts/sft.py training_configs/sft-llama-3.1-8b-it-lora-GrandmasterRAG-v1.yaml
 ```
 
+<summary>SFT Training</summary>
+
+```shell
+ poetry run accelerate launch --config_file accelerate/stage2_config.yaml scripts/vlm.py --model_id "Qwen/Qwen2-VL-2B-Instruct" --data_file "llava_instruct_150k_russian.json" --image_dir "/mnt/storage/lvl/images/" --output_dir "/mnt/storage/lvl/vikhr-vl" --epochs 3 --batch_size 4 --learning_rate 2e-4 --fp16
+ ```
+</details>
+
 ### 📝 YAML config examples
 
 <details>
@@ -187,6 +194,7 @@ PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accel
   ```
   
 </details>
+<details>
 
 ---
 
