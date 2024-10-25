@@ -69,7 +69,7 @@ def main():
     dataset = load_dataset("json", data_files=args.data_file)
     dataset = [format_data(sample, args.image_dir) for sample in dataset['train']]
     
-    model = AutoModelForVision2Seq.from_pretrained(args.model_id, torch_dtype=torch.float16, device_map="auto")
+    model = AutoModelForVision2Seq.from_pretrained(args.model_id, torch_dtype=torch.float16)
     processor = AutoProcessor.from_pretrained(args.model_id)
     
     peft_config = LoraConfig(
