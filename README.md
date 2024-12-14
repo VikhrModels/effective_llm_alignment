@@ -125,7 +125,7 @@ You need to select a DeepSpeed config + a training config + the script itself. H
 
 ```bash
 
-PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/stage2_config.yaml scripts/sft.py training_configs/sft-llama-3.1-8b-it-lora-GrandmasterRAG-v1.yaml
+PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/stage2_config.yaml scripts/sft.py training_configs/sft/sft-llama-3.1-8b-it-lora-GrandmasterRAG-v1.yaml
 ```
 
 ### 📝 YAML config examples
@@ -187,7 +187,3 @@ PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accel
   ```
   
 </details>
-
----
-
-Feel free to modify any part of this translation! 😊
