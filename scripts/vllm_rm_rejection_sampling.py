@@ -122,43 +122,40 @@ async def generate_hypotheses(row: pd.Series):
             else:
                 base_prompt = row[args.prompt_field]
 
-            # Генерируем n_hypos вариантов
-            generated_conversations = []
-            for _ in range(args.n_hypos):
-                response_format = {'type': 'text'} if 'response_format' not in row else row['response_format']
+            response_format = {'type': 'text'} if 'response_format' not in row else row['response_format']
+
+            # Если есть follow-up промпт
+            if args.follow_up_prompt_field in row and pd.notna(row[args.follow_up_prompt_field]):
                 completion = await client.chat.completions.create(
                     messages=base_prompt,
                     model=args.model_name,
                     temperature=args.temperature,
                     response_format=response_format
                 )
-
                 if args.api_type == 'eliza':
                     completion = ChatCompletion(**completion.response)
 
-                first_answer = completion.choices[0].message.model_dump(
+                answer = completion.choices[0].message.model_dump(
                     exclude={"function_call", "tool_calls", "refusal", "audio"}
                 )
-                current_conversation = base_prompt + [first_answer]
+                base_prompt = base_prompt + [answer] + row[args.follow_up_prompt_field]
 
-                # Если есть follow-up промпт
-                if args.follow_up_prompt_field in row and pd.notna(row[args.follow_up_prompt_field]):
-                    base_prompt = current_conversation + row[args.follow_up_prompt_field]
+            # Генерируем n_hypos вариантов
+            generated_conversations = []
+            for _ in range(args.n_hypos):
+                completion = await client.chat.completions.create(
+                    messages=base_prompt,
+                    model=args.model_name,
+                    temperature=args.temperature,
+                    response_format=response_format
+                )
+                if args.api_type == 'eliza':
+                    completion = ChatCompletion(**completion.response)
 
-                    follow_up_completion = await client.chat.completions.create(
-                        messages=base_prompt,
-                        model=args.model_name,
-                        temperature=args.temperature,
-                        response_format=response_format
-                    )
-
-                    if args.api_type == 'eliza':
-                        follow_up_completion = ChatCompletion(**follow_up_completion.response)
-
-                    follow_up_answer = follow_up_completion.choices[0].message.model_dump(
-                        exclude={"function_call", "tool_calls", "refusal", "audio"}
-                    )
-                    current_conversation = base_prompt + [follow_up_answer]
+                answer = completion.choices[0].message.model_dump(
+                    exclude={"function_call", "tool_calls", "refusal", "audio"}
+                )
+                current_conversation = base_prompt + [answer]
 
                 generated_conversations.append(current_conversation)
 
