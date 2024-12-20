@@ -31,17 +31,6 @@ bf16: True
 seed: 42
 logging_first_step: True
 use_peft: False
-lora_target_modules:
-  - "k_proj"
-  - "v_proj"
-  - "q_proj"
-  - "o_proj"
-  - "gate_proj"
-  - "up_proj"
-  - "down_proj"
-  - "lm_head"
-lora_r: 320
-lora_alpha: 320
 assistant_message_template: "<|im_start|>assistant<|im_sep|>"
 pad_token: "<|dummy_0|>"
 eos_token: "<|im_end|>"

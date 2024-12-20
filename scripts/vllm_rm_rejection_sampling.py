@@ -1,127 +1,264 @@
+import os
+import asyncio
 import argparse
 import json
-import os
 import pandas as pd
-from tqdm import tqdm
+import numpy as np
 import torch
-from vllm import LLM, SamplingParams
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from datasets import load_dataset
+from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai.types.chat import ChatCompletion
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+
+parser = argparse.ArgumentParser(description='Асинхронная генерация ответов через OpenAI API с Rejection Sampling через RM.')
+parser.add_argument('--openai_api_key', type=str, default=os.environ.get("OPENAI_API_KEY"), help='API ключ')
+parser.add_argument('--api_type', type=str, default="openai", help='Тип API - openai или azure')
+parser.add_argument('--output_folder', type=str, default="data", help='Название папки для сохранения результатов')
+parser.add_argument('--openai_base_url', type=str, default="http://localhost:8000/v1", help='Базовый URL для API')
+parser.add_argument('--model_name', type=str, required=True, help='Название модели для API запросов')
+parser.add_argument('--global_system_prompt', type=str, required=False, help='Глобальный системный промпт для генерации')
+parser.add_argument('--local_system_prompt_field', type=str, default="system_prompt", help='Название поля с локальным системным промптом')
+parser.add_argument('--id_field', type=str, default="id", help='Название поля содержащее id промпта')
+parser.add_argument('--prompt_field', type=str, default="prompt", help='Название поля содержащее промпт в виде [{...}]')
+parser.add_argument('--follow_up_prompt_field', type=str, default="follow_up_prompt", help='Название поля содержащее follow-up промпт')
+parser.add_argument('--n_parallel', type=int, default=4, help='Количество параллельных запросов')
+parser.add_argument('--temperature', type=float, default=0.8, help='Температура для генерации')
+parser.add_argument('--max_gen_tokens', type=int, default=3072, help='Максимальное количество токенов для генерации')
+parser.add_argument('--prompts_source', type=str, required=True, help='Путь к JSONL файлу с запросами для модели в формате OpenAI')
+parser.add_argument('--n_hypos', type=int, default=5, help='Количество генераций на один промпт')
+parser.add_argument('--rm_model_path', type=str, required=True, help='Путь к Reward Model')
+parser.add_argument('--rm_model_atten_impl', type=str, default='sdpa', help='Имплементация attention для RM')
+parser.add_argument('--rm_max_seq_len', type=int, default=16000, help='Максимальная длина последовательности для RM')
+parser.add_argument('--rm_max_batch_size', type=int, default=8, help='Максимальный batch size для RM')
+parser.add_argument('--rm_device', type=str, default='cuda:0', help='Устройство для RM (cuda/cpu)')
+
+args = parser.parse_args()
+
+# Инициализируем клиента с указанными параметрами
+if args.api_type == 'openai':
+    client = AsyncOpenAI(
+        api_key=args.openai_api_key,
+        base_url=args.openai_base_url
+    )
+elif args.api_type == 'azure':
+    client = AsyncAzureOpenAI(
+        api_key=args.openai_api_key,
+        azure_endpoint=args.openai_base_url,
+        api_version="2024-08-01-preview"
+    )
+elif args.api_type == 'eliza':
+    client = AsyncOpenAI(
+        api_key=args.openai_api_key,
+        base_url='http://soyproxy.yandex-team.ru/proxy/openai/v1/',
+    )
+
+# Загрузка Reward модели
+print('Loading Reward Model...')
+rm_tokenizer = AutoTokenizer.from_pretrained(args.rm_model_path)
+rm_tokenizer.model_max_length = args.rm_max_seq_len
+
+rm_device = torch.device(args.rm_device)
+rm_model = AutoModelForSequenceClassification.from_pretrained(
+    args.rm_model_path, 
+    attn_implementation=args.rm_model_atten_impl
+)
+rm_model.to(dtype=torch.float16, device=rm_device).eval()
+
+# Очереди для асинхронной обработки
+scoring_queue = asyncio.Queue()
+result_queue = asyncio.Queue()
+
+# Контроль паралеллизма
+tp_executor = ThreadPoolExecutor(max_workers=1)
+semaphore = asyncio.Semaphore(args.n_parallel)
+write_lock = asyncio.Lock()
+
+# Файл для сохранения результатов
+output_file = f'{args.output_folder}/{args.prompts_source.split("/")[-1].split(".")[-2]}_{args.model_name.split("/")[-1].lower()}_rs.jsonl'
+if not os.path.exists(args.output_folder):
+    os.makedirs(args.output_folder)
 
 
-def main(args):
-    # Проверка доступности устройства
-    device = torch.device(f"cuda:{args.rm_gpu_index}" if torch.cuda.is_available() and args.rm_gpu_index else "cpu")
-
-    # Загрузка LLM модели и токенизатора
-    llm = LLM(model=args.llm_model_path, dtype='half', max_model_len=args.max_seq_len, tensor_parallel_size=args.llm_tp)
-    llm_tokenizer = AutoTokenizer.from_pretrained(args.llm_model_path)
-    llm_tokenizer.model_max_length = args.max_seq_len
-
-    # Загрузка RM модели и токенизатора с использованием SDPA
-    rm_model = AutoModelForSequenceClassification.from_pretrained(args.rm_model_path, attn_implementation=args.rm_model_atten_impl)
-    rm_tokenizer = AutoTokenizer.from_pretrained(args.rm_model_path)
-    rm_tokenizer.model_max_length = args.max_seq_len
-    rm_model.to(dtype=torch.float16, device=device).eval()
-
-    # Загрузка входного датасета с помощью datasets
-    dataset = load_dataset(args.input_dataset_path, split='train')
-    print(dataset)
-
-    # Проверка существования файла с результатами
-    if os.path.exists(args.output_dataset_path):
-        existing_df = pd.read_json(args.output_dataset_path, orient='records', lines=True)
-        start_idx = len(existing_df) // args.save_n_worst
-        results = existing_df.to_dict(orient='records')
-        print(f"Continuing from index {start_idx}")
-    else:
-        start_idx = 0
-        results = []
-
-    for idx, row in tqdm(enumerate(dataset), total=len(dataset)):
-        if idx < start_idx:
-            continue
-
-        conversation = row[args.conversation_column]
-
-        # Удаление последнего ответа ассистента
-        conversation_without_last = conversation[:-1]
-
-        # Генерация промптов для LLM
-        prompt = llm_tokenizer.apply_chat_template(conversation_without_last, tokenize=False, add_generation_prompt=True)
-        prompts = [prompt] * args.n_sampling_count
-
-        # Параметры семплирования
-        sampling_params = SamplingParams(temperature=args.sampling_temperature, max_tokens=2048)
-
-        # Генерация ответов
-        outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
-
-        generated_conversations = []
-        for output in outputs:
-            generated_text = output.outputs[0].text.strip()
-            new_conversation = conversation_without_last + [{'role': 'assistant', 'content': generated_text}]
-            generated_conversations.append(new_conversation)
-
-        # Оценка исходного диалога и сгенерированных диалогов с помощью RM модели
-        original_conversation_text = rm_tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=False)
-        batch_texts = [original_conversation_text] + [
-            rm_tokenizer.apply_chat_template(conv, tokenize=False) for conv in generated_conversations
-        ]
-        batch = rm_tokenizer.batch_encode_plus(batch_texts, return_tensors='pt', padding=True, truncation=True)
-        batch = {k: v.to(device) for k, v in batch.items()}
+def score_generations(generated_conversations):
+    scores = []
+    # Преобразуем все разговоры в текст
+    all_texts = [
+        rm_tokenizer.apply_chat_template(conv, tokenize=False) 
+        for conv in generated_conversations
+    ]
+    
+    # Обрабатываем батчами
+    for i in range(0, len(all_texts), args.rm_max_batch_size):
+        batch_texts = all_texts[i:i + args.rm_max_batch_size]
+        batch = rm_tokenizer.batch_encode_plus(
+            batch_texts,
+            return_tensors='pt',
+            padding=True,
+            truncation=True
+        )
+        batch = {k: v.to(rm_device) for k, v in batch.items()}
 
         with torch.inference_mode():
-            scores = rm_model(**batch).logits.detach().cpu().view(-1).numpy()
+            batch_scores = rm_model(**batch).logits.detach().cpu().view(-1).numpy()
+            scores.extend(batch_scores)
 
-        scores = scores.astype(float)
+    return np.array(scores).astype(float)
 
-        # Оценка исходного диалога
-        original_rm_score = scores[0]
 
-        # Сортировка сгенерированных диалогов по оценкам
-        generated_scores = list(zip(generated_conversations, scores[1:]))
-        generated_scores.sort(key=lambda x: x[1])
+async def generate_hypotheses(row: pd.Series):
+    async with semaphore:
+        try:
+            # Определяем системный промпт
+            system_prompt = None
+            if args.local_system_prompt_field in row and pd.notna(row[args.local_system_prompt_field]):
+                system_prompt = row[args.local_system_prompt_field]
+            elif args.global_system_prompt:
+                system_prompt = args.global_system_prompt
 
-        # Сохранение результатов для save_n_worst худших генераций
-        for i in range(args.save_n_worst):
-            rejected_conversation, rejected_score = generated_scores[i]
+            # Формируем базовый промпт
+            if system_prompt:
+                base_prompt = [{'role': 'system', 'content': system_prompt}] + row[args.prompt_field]
+            else:
+                base_prompt = row[args.prompt_field]
+
+            # Генерируем n_hypos вариантов
+            generated_conversations = []
+            for _ in range(args.n_hypos):
+                response_format = {'type': 'text'} if 'response_format' not in row else row['response_format']
+                completion = await client.chat.completions.create(
+                    messages=base_prompt,
+                    model=args.model_name,
+                    temperature=args.temperature,
+                    response_format=response_format
+                )
+
+                if args.api_type == 'eliza':
+                    completion = ChatCompletion(**completion.response)
+
+                first_answer = completion.choices[0].message.model_dump(
+                    exclude={"function_call", "tool_calls", "refusal", "audio"}
+                )
+                current_conversation = base_prompt + [first_answer]
+
+                # Если есть follow-up промпт
+                if args.follow_up_prompt_field in row and pd.notna(row[args.follow_up_prompt_field]):
+                    base_prompt = current_conversation + row[args.follow_up_prompt_field]
+
+                    follow_up_completion = await client.chat.completions.create(
+                        messages=base_prompt,
+                        model=args.model_name,
+                        temperature=args.temperature,
+                        response_format=response_format
+                    )
+
+                    if args.api_type == 'eliza':
+                        follow_up_completion = ChatCompletion(**follow_up_completion.response)
+
+                    follow_up_answer = follow_up_completion.choices[0].message.model_dump(
+                        exclude={"function_call", "tool_calls", "refusal", "audio"}
+                    )
+                    current_conversation = base_prompt + [follow_up_answer]
+
+                generated_conversations.append(current_conversation)
+
+            # Отправляем на оценку
+            await scoring_queue.put((row, base_prompt, generated_conversations))
+
+        except Exception as e:
+            print(f'Generation error: {e}')
+
+
+async def score_and_select():
+    while True:
+        try:
+            row, base_prompt, generated_conversations = await scoring_queue.get()
+            
+            # Запускаем scoring в отдельном потоке через ThreadPoolExecutor
+            scores = await asyncio.get_event_loop().run_in_executor(
+                tp_executor,
+                score_generations,
+                generated_conversations
+            )
+
+            # Находим лучшую и худшую генерации
+            best_idx = scores.argmax()
+            worst_idx = scores.argmin()
 
             result = {
-                'prompt': conversation_without_last,
-                'chosen': [conversation[-1]],
-                'chosen_score': original_rm_score,
-                'rejected': [rejected_conversation[-1]],
-                'rejected_score': rejected_score,
-                'chosen_gen': [generated_scores[-1][0][-1]],
-                'chosen_gen_score': generated_scores[-1][1]
+                args.id_field: row[args.id_field],
+                'prompt': base_prompt,
+                'chosen': [generated_conversations[best_idx][-1]],
+                'chosen_score': float(scores[best_idx]),
+                'rejected': [generated_conversations[worst_idx][-1]],
+                'rejected_score': float(scores[worst_idx]),
+                'all_generations': [conv[-1] for conv in generated_conversations],
+                'all_scores': [float(score) for score in scores]
             }
-            results.append(result)
 
-            # Сохранение результата в файл после обработки каждого диалога
-            with open(args.output_dataset_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(result, ensure_ascii=False) + '\n')
+            await result_queue.put(result)
+        except Exception as e:
+            print(f'Scoring error: {e}')
+        finally:
+            scoring_queue.task_done()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LLM Sampling and RM Scoring Script")
-    parser.add_argument("--llm_model_path", type=str, required=True, help="Path to the LLM model")
-    parser.add_argument("--llm_tp", type=int, default=1, help="vLLM tensor parallel")
-    parser.add_argument("--rm_model_path", type=str, required=True, help="Path to the RM model")
-    parser.add_argument("--rm_model_atten_impl", type=str, default='eager', help="attn_implementation param")
-    parser.add_argument("--rm_gpu_index", type=int, default=None, help="Index of RM GPU device, leave None to use CPU.")
-    parser.add_argument("--max_seq_len", type=int, default=16000, help="VLLM max_model_len param")
-    parser.add_argument("--input_dataset_path", type=str, required=True, help="Path to the input dataset (jsonl format)")
-    parser.add_argument("--n_sampling_count", type=int, default=7, help="Number of samples to generate for each prompt")
-    parser.add_argument("--conversation_column", type=str, default="conversation", help="Column name for conversations in the dataset")
-    parser.add_argument("--sampling_temperature", type=float, default=0.8, help="Temperature for sampling")
-    parser.add_argument("--output_dataset_path", type=str, required=True, help="Path to save the output dataset (jsonl format)")
-    parser.add_argument("--save_n_worst", type=int, required=True, help="Number of worst generations to save")
+async def save_results():
+    while True:
+        try:
+            result = await result_queue.get()
+            async with write_lock:
+                with open(output_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(result, ensure_ascii=False) + '\n')
+        except Exception as e:
+            print(f'Saving error: {e}')
+        finally:
+            result_queue.task_done()
 
-    args = parser.parse_args()
 
-    # Проверка, что save_n_worst меньше n_sampling_count
-    if args.save_n_worst >= args.n_sampling_count:
-        raise ValueError("save_n_worst must be less than n_sampling_count")
+async def main():
+    try:
+        # Чтение файла с запросами
+        print('Loading Prompts Source file...')
+        
+        df = pd.read_json(args.prompts_source, lines=True)
+        if args.prompt_field not in df or args.id_field not in df:
+            raise ValueError(f'Файл с запросами должен содержать колонки {args.prompt_field} и {args.id_field}!')
+    
+        # Проверка уже обработанных промптов
+        if os.path.exists(output_file):
+            df_existing_responses = pd.read_json(output_file, lines=True)
+            processed_prompts_ids = set(df_existing_responses[args.id_field])
+            print(f"Skipping {len(processed_prompts_ids)} already completed prompts...")
+        else:
+            processed_prompts_ids = set()
+    
+        filtered_prompts = df[~df[args.id_field].isin(processed_prompts_ids)]
 
-    main(args)
+        print('Starting generation...')
+    
+        # Запускаем воркеры
+        scoring_worker = asyncio.create_task(score_and_select())
+        saving_worker = asyncio.create_task(save_results())
+    
+        # Генерируем ответы
+        generation_tasks = [generate_hypotheses(row) for _, row in filtered_prompts.iterrows()]
+        for f in tqdm(asyncio.as_completed(generation_tasks), total=len(generation_tasks)):
+            await f
+
+        # for _, row in tqdm(filtered_prompts.iterrows(), total=len(filtered_prompts)):
+        #     await generate_hypotheses(row)
+    
+        # Ждем завершения всех задач
+        await scoring_queue.join()
+        await result_queue.join()
+    
+        # Останавливаем воркеры
+        scoring_worker.cancel()
+        saving_worker.cancel()
+    finally:
+        tp_executor.shutdown()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

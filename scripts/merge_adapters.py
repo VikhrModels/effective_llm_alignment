@@ -24,7 +24,7 @@ def merge(source_path, output_path, is_clf):
     if not is_clf:
         adapter_model = AutoPeftModelForCausalLM.from_pretrained(source_path, torch_dtype=torch.bfloat16)
     else:
-        adapter_model = AutoPeftModelForSequenceClassification.from_pretrained(source_path, torch_dtype=torch.bfloat16)
+        adapter_model = AutoPeftModelForSequenceClassification.from_pretrained(source_path, torch_dtype=torch.bfloat16, num_labels=1)
 
     # Сохраняем адаптер
     adapter_save_path = os.path.join(output_path, 'original_adapter')
