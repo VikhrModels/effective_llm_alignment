@@ -69,7 +69,7 @@ elif args.api_type == 'eliza':
 semaphore = asyncio.Semaphore(args.n_parallel)
 write_lock = asyncio.Lock()
 
-output_file = f'{args.output_folder}/{args.prompts_source.split("/")[-1].split(".")[-2]}_{args.model_name.split("/")[-1].lower()}_responses.jsonl'
+output_file = f'{args.output_folder}/{args.prompts_source.split("/")[-1].split(".")[-2]}_gen_responses.jsonl'
 
 if not os.path.exists(args.output_folder):
     os.makedirs(args.output_folder)

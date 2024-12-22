@@ -22,6 +22,7 @@ parser.add_argument('--local_system_prompt_field', type=str, default="system_pro
 parser.add_argument('--id_field', type=str, default="id", help='Название поля содержащее id промпта')
 parser.add_argument('--prompt_field', type=str, default="prompt", help='Название поля содержащее промпт в виде [{...}]')
 parser.add_argument('--follow_up_prompt_field', type=str, default="follow_up_prompt", help='Название поля содержащее follow-up промпт')
+parser.add_argument('--correct_answer_field', type=str, default="correct_answer", help='Название поля содержащее правильный ответ (в любой форме)')
 parser.add_argument('--n_parallel', type=int, default=4, help='Количество параллельных запросов')
 parser.add_argument('--temperature', type=float, default=0.8, help='Температура для генерации')
 parser.add_argument('--max_gen_tokens', type=int, default=3072, help='Максимальное количество токенов для генерации')
@@ -80,11 +81,19 @@ if not os.path.exists(args.output_folder):
     os.makedirs(args.output_folder)
 
 
-def score_generations(generated_conversations):
+def score_generations(generated_conversations, correct_answer):
     scores = []
+    
     # Преобразуем все разговоры в текст
+    def transform_conv(conv):
+        if correct_answer is None:
+            return conv
+        else:
+            conv = [{'role': 'system', 'content': f'The correct final answer must be: {correct_answer}'}] + conv
+            return conv
+    
     all_texts = [
-        rm_tokenizer.apply_chat_template(conv, tokenize=False) 
+        rm_tokenizer.apply_chat_template(transform_conv(conv), tokenize=False) 
         for conv in generated_conversations
     ]
     
@@ -175,7 +184,8 @@ async def score_and_select():
             scores = await asyncio.get_event_loop().run_in_executor(
                 tp_executor,
                 score_generations,
-                generated_conversations
+                generated_conversations,
+                row[args.correct_answer_field] if args.correct_answer_field in row else None
             )
 
             # Находим лучшую и худшую генерации
@@ -192,6 +202,8 @@ async def score_and_select():
                 'all_generations': [conv[-1] for conv in generated_conversations],
                 'all_scores': [float(score) for score in scores]
             }
+            if args.correct_answer_field in row:
+                result['target_answer'] = row[args.correct_answer_field ]
 
             await result_queue.put(result)
         except Exception as e:
