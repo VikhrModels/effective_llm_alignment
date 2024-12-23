@@ -1,0 +1,51 @@
+model_name_or_path: "Vikhrmodels/Phikhr-14B-Instruct-R-19-12-24-SFT"
+dataset: "data/po_dataset.jsonl"
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+num_train_epochs: 2
+log_level: "info"
+attn_implementation: "sdpa"
+save_strategy: "steps"
+save_steps: 100
+save_total_limit: 8
+learning_rate: 0.00002
+lr_scheduler_type: cosine
+gradient_accumulation_steps: 16
+gradient_checkpointing: True
+logging_steps: 1
+remove_unused_columns: True
+dataloader_num_workers: 2
+dataset_num_proc: 10
+max_length: 10240
+max_prompt_length: 5120
+save_only_model: True
+generate_eval_examples: True
+test_size: 0.05
+evaluation_strategy: "steps"
+eval_steps: 100
+run_name: "smpo-smooth_lower_bound-phikr-14b-19-12-24-lora-196-b1.2-mm0.5-sft0.75"
+output_dir: "checkpoints/smpo-smooth_lower_bound-phikr-14b-19-12-24-lora-196-b1.2-mm0.5-sft0.75"
+warmup_steps: 20
+report_to: "wandb"
+beta: 1.2
+margin_min: 0.5
+margin_delta: 0.2
+chosen_sft_ratio: 0.75
+loss_type: "smooth_lower_bound"
+bf16: True
+seed: 42
+logging_first_step: True
+use_peft: True
+lora_task_type: CAUSAL_LM
+lora_target_modules:
+  - "qkv_proj"
+  - "o_proj"
+  - "gate_up_proj"
+  - "down_proj"
+  - "lm_head"
+lora_r: 196
+lora_alpha: 196
+pad_token: "<|dummy_0|>"
+eos_token: "<|im_end|>"
+chat_template: "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|im_start|>' + message['role'] + '<|im_sep|>'+ message['content'] | trim + '<|im_end|>' %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant<|im_sep|>' }}{% endif %}"
+force_chat_template: False

@@ -1,4 +1,3 @@
-
 import inspect
 import random
 import warnings
@@ -14,13 +13,11 @@ import torch.nn.functional as F
 from accelerate import PartialState
 from datasets import Dataset
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, DataCollator, PreTrainedModel, PreTrainedTokenizerBase, Trainer
+from transformers import AutoModelForCausalLM, DataCollator, PreTrainedModel, PreTrainedTokenizerBase, Trainer, is_wandb_available
 from trl.trainer import CPOTrainer
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput
-from transformers.utils import is_torch_fx_proxy
-
-from trl.import_utils import is_peft_available, is_wandb_available
+from transformers.utils import is_torch_fx_proxy, is_peft_available
 
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional
