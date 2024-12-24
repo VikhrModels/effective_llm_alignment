@@ -139,7 +139,8 @@ async def generate_hypotheses(row: pd.Series):
                     messages=base_prompt,
                     model=args.model_name,
                     temperature=args.temperature,
-                    response_format=response_format
+                    response_format=response_format,
+                    max_tokens=args.max_gen_tokens
                 )
                 if args.api_type == 'eliza':
                     completion = ChatCompletion(**completion.response)
@@ -156,7 +157,8 @@ async def generate_hypotheses(row: pd.Series):
                     messages=base_prompt,
                     model=args.model_name,
                     temperature=args.temperature,
-                    response_format=response_format
+                    response_format=response_format,
+                    max_tokens=args.max_gen_tokens
                 )
                 if args.api_type == 'eliza':
                     completion = ChatCompletion(**completion.response)

@@ -255,14 +255,13 @@ class SimpleMarginPOTrainer(Trainer):
         self.loss_type = args.loss_type
 
         assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
+        assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
         
         if args.margin_delta > 0 and args.loss_type != 'smooth_double_bound':
             warnings.warn(
                 f"You passed the parameter 'margin_delta' > 0, which is not supported with the selected loss_type {args.loss_type}!"
                 f" It only works with 'smooth_double_bound' loss_type."
             )
-
-        assert args.margin_min > 0 and args.loss_type not in ['hinge', 'sigmoid'], "margin_min must be greater then 0"
 
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
@@ -305,8 +304,8 @@ class SimpleMarginPOTrainer(Trainer):
             https://github.com/EleutherAI/lm-evaluation-harness/pull/531#issuecomment-1595586257
         """
 
-        full_tokenized = self.tokenizer(prompt + answer, add_special_tokens=False)
-        prompt_input_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        full_tokenized = self.processing_class(prompt + answer, add_special_tokens=False)
+        prompt_input_ids = self.processing_class(prompt, add_special_tokens=False)["input_ids"]
 
         answer_input_ids = full_tokenized["input_ids"][len(prompt_input_ids) :]
         answer_attention_mask = full_tokenized["attention_mask"][len(prompt_input_ids) :]
@@ -371,7 +370,7 @@ class SimpleMarginPOTrainer(Trainer):
 
             if not isinstance(prompt, str):
                 raise ValueError(f"prompt should be an str but got {type(prompt)}")
-            prompt_tokens = self.tokenizer(prompt, add_special_tokens=False)
+            prompt_tokens = self.processing_class(prompt, add_special_tokens=False)
             prompt_tokens = {f"prompt_{k}": v for k, v in prompt_tokens.items()}
 
             if not isinstance(chosen, str):
@@ -406,7 +405,7 @@ class SimpleMarginPOTrainer(Trainer):
                 )
 
             # add BOS token to head of prompt. Avoid adding if it's already there
-            bos_token_id = self.tokenizer.bos_token_id
+            bos_token_id = self.processing_class.bos_token_id
             if (prompt_len_input_ids == 0 or bos_token_id != prompt_tokens["prompt_input_ids"][0]) and bos_token_id is not None:
                 prompt_tokens["prompt_input_ids"] = [bos_token_id] + prompt_tokens["prompt_input_ids"]
                 prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
@@ -418,7 +417,7 @@ class SimpleMarginPOTrainer(Trainer):
                 rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens["prompt_attention_mask"]
 
             # add EOS token to end of answer. Avoid adding if it's already there
-            eos_token_id = self.tokenizer.eos_token_id
+            eos_token_id = self.processing_class.eos_token_id
             if len(chosen_tokens["input_ids"]) == 0 or eos_token_id != chosen_tokens["input_ids"][-1]:
                 chosen_tokens["input_ids"].append(eos_token_id)
                 chosen_tokens["attention_mask"].append(1)
@@ -473,13 +472,13 @@ class SimpleMarginPOTrainer(Trainer):
                     batch[f"{k}{type_key}"] = tokens
 
         else:
-            chosen_tokens = self.tokenizer(
+            chosen_tokens = self.processing_class(
                 chosen, truncation=True, max_length=self.max_target_length, add_special_tokens=True
             )
-            rejected_tokens = self.tokenizer(
+            rejected_tokens = self.processing_class(
                 rejected, truncation=True, max_length=self.max_target_length, add_special_tokens=True
             )
-            prompt_tokens = self.tokenizer(
+            prompt_tokens = self.processing_class(
                 prompt, truncation=True, max_length=self.max_prompt_length, add_special_tokens=True
             )
 
@@ -587,7 +586,7 @@ class SimpleMarginPOTrainer(Trainer):
                 -F.logsigmoid(self.beta * logits_lower_bound)
             )
         elif self.loss_type == "hinge":
-            losses = torch.relu(1 - self.beta * logits_lower_bound)
+            losses = torch.relu(-self.beta * logits_lower_bound)
         elif self.loss_type == "ipo":
             losses = (self.beta * logits_lower_bound).pow(2)
         elif self.loss_type == "smooth_lower_bound":
@@ -779,27 +778,6 @@ class SimpleMarginPOTrainer(Trainer):
             return (loss, metrics)
         return loss
 
-    def get_batch_samples(self, model, batch: Dict[str, torch.LongTensor]) -> Tuple[str, str]:
-        """Generate samples from the model and reference model for the given batch of inputs."""
-
-        # If one uses `generate_during_eval` with peft + bf16, we need to explicitly call generate with
-        # the torch cuda amp context manager as some hidden states are silently casted to full precision.
-        generate_context_manager = nullcontext if not self._peft_has_been_casted_to_bf16 else torch.cuda.amp.autocast
-
-        with generate_context_manager():
-            policy_output = model.generate(
-                input_ids=batch["prompt_input_ids"],
-                attention_mask=batch["prompt_attention_mask"],
-                max_length=self.max_length,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-
-        policy_output = pad_to_length(policy_output, self.max_length, self.tokenizer.pad_token_id)
-        policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
-
-        return policy_output_decoded
-
     def prediction_step(
         self,
         model: Union[PreTrainedModel, nn.Module],
@@ -844,55 +822,7 @@ class SimpleMarginPOTrainer(Trainer):
         for key, value in metrics.items():
             self._stored_metrics[train_eval][key].append(value)
 
-    def evaluation_loop(
-        self,
-        dataloader: DataLoader,
-        description: str,
-        prediction_loss_only: Optional[bool] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> EvalLoopOutput:
-        """
-        Overriding built-in evaluation loop to store metrics for each batch.
-        Prediction/evaluation loop, shared by `Trainer.evaluate()` and `Trainer.predict()`.
-
-        Works both with or without labels.
-        """
-
-        # Sample and save to game log if requested (for one batch to save time)
-        if self.generate_during_eval:
-            # Generate random indices within the range of the total number of samples
-            num_samples = len(dataloader.dataset)
-            random_indices = random.sample(range(num_samples), k=self.args.eval_batch_size)
-
-            # Use dataloader.dataset.select to get the random batch without iterating over the DataLoader
-            random_batch_dataset = dataloader.dataset.select(random_indices)
-            random_batch = self.data_collator(random_batch_dataset)
-            random_batch = self._prepare_inputs(random_batch)
-
-            policy_output_decoded = self.get_batch_samples(self.model, random_batch)
-
-            self.log(
-                {
-                    "game_log": wandb.Table(
-                        columns=["Prompt", "Policy"],
-                        rows=[
-                            [prompt, pol[len(prompt) :]]
-                            for prompt, pol in zip(random_batch["prompt"], policy_output_decoded)
-                        ],
-                    )
-                }
-            )
-            self.state.log_history.pop()
-
-        # Base evaluation
-        initial_output = super().evaluation_loop(
-            dataloader, description, prediction_loss_only, ignore_keys, metric_key_prefix
-        )
-
-        return initial_output
-
-    def log(self, logs: Dict[str, float]) -> None:
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
         """
         Log `logs` on the various objects watching training, including stored metrics.
 
@@ -906,7 +836,7 @@ class SimpleMarginPOTrainer(Trainer):
         for key, metrics in self._stored_metrics[train_eval].items():
             logs[key] = torch.tensor(metrics).mean().item()
         del self._stored_metrics[train_eval]
-        return super().log(logs)
+        return super().log(logs, start_time)
 
     @wraps(Trainer.push_to_hub)
     def push_to_hub(self, commit_message: Optional[str] = "End of training", blocking: bool = True, **kwargs) -> str:
