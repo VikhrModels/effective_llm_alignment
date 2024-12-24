@@ -21,7 +21,10 @@ This is a **super customizable**, **concise**, **user-friendly**, and **efficien
 - **CPO and SimPO:** All TRL options
 - **SMPO:** Our own most stable alignment method (details below)
 - **Non-pair Reward Modeling:** With margins and centring support from TRL
-- **Rejection Sampling:** Preference dataset generation using vLLM and RM
+- **Special prompts basket format:** Our prompts basket format (vi-basket) allows to generate dialogs with follow-ups and system-prompts.
+- **Rejection Sampling:** Effective async preference dataset generation using vLLM and RM
+- **Scoring using RM:** Anync generation and scoring of answers based on some prompts basket, using external RM and vLLM
+- **Effective FAISS Map-Reduce Deduplication:** We have tools for Map-Reduce based deduplication for dense embeddings. It can deduplicate VERY large datasets in parallel.
 - **LLM scoring using RM:** Use RM model and your dataset to caluclate RM scores statistics to compare models.
 - **NER, CLIP, Classification, STS:** Not native to this toolkit but tested (Work in Progress)
 
@@ -93,13 +96,20 @@ First, make sure you have all the necessary developer Linux libraries installed,
 gcc --version
 ```
 
+It is recommened to do this steps before any installation:
+
+```bash
+apt update
+apt install build-essential zlib1g-dev libffi-dev libssl-dev libbz2-dev libreadline-dev libsqlite3-dev liblzma-dev libncurses-dev tk-dev
+```
+
 Next, ensure that CUDA is version 11.8 or higher (preferably 12.1) and that all your GPUs are detected. Use the command:
 
 ```bash
 nvidia-smi
 ```
 
-After completing the first step of installation, check that you have Poetry version 1.8+ installed, and it’s best to use Python 3.10. If not, update Poetry with:
+After completing the first step of installation, check that you have Poetry version 1.8+ installed, and it’s best to use Python **3.10.16**. If not, update Poetry with:
 
 ```bash
 poetry self update
@@ -108,8 +118,10 @@ poetry self update
 and run:
 
 ```bash
-poetry env use 3.10
+poetry env use 3.10.16
 ```
+
+You can install 3.10.16 version of python via [PyEnv](https://github.com/pyenv/pyenv).
 
 After the second installation step, make sure that running `poetry run ds_report` returns meaningful text. Additionally, verify the version of Torch and the presence of NVIDIA packages.
 
@@ -118,6 +130,8 @@ If you encounter an error related to DeepSpeed and `fused_adam` during training,
 ```bash
 DS_BUILD_FUSED_ADAM=1 poetry run pip install deepspeed==0.14.5
 ```
+
+Sometimes, deepspeed errors depends on Python version, on 3.10.16 everythong was tested in different environments.
 
 ### 🏃‍♂️ Example of Running a Script from Config
 
