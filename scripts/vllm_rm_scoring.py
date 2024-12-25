@@ -3,6 +3,8 @@ import asyncio
 import argparse
 import pandas as pd
 import numpy as np
+from rich.console import Console
+from rich.table import Table
 import torch
 import json
 from openai import AsyncOpenAI, AsyncAzureOpenAI
@@ -205,52 +207,73 @@ async def main():
 
         filtered_prompts = df[~df[args.id_field].isin(processed_prompts_ids)]
         
-        if len(filtered_prompts) == 0:
-            print("All prompts have been processed. Nothing to do.")
-            return
+        if len(filtered_prompts) > 0:
+            print(f'Starting generation and evaluation for {len(filtered_prompts)} prompts...')
+    
+            # Generate and evaluate responses
+            tasks = [generate_and_evaluate(row, responses, rewards) 
+                    for _, row in filtered_prompts.iterrows()]
+            for f in tqdm(asyncio.as_completed(tasks), total=len(tasks)):
+                await f
 
-        print(f'Starting generation and evaluation for {len(filtered_prompts)} prompts...')
-
-        # Generate and evaluate responses
-        tasks = [generate_and_evaluate(row, responses, rewards) 
-                for _, row in filtered_prompts.iterrows()]
-        for f in tqdm(asyncio.as_completed(tasks), total=len(tasks)):
-            await f
-
+        # Initialize Rich Console
+        console = Console()
+        
         # Calculate statistics only if we have data
         if responses and rewards:
-            response_lengths = [len(response.split()) for response in responses]
+            response_lengths = [len(response) for response in responses]
             
             stats = {
-                'Response Length Statistics (words)': {
+                'Response Length': {
                     'Mean': np.mean(response_lengths),
                     'Std': np.std(response_lengths),
                     'Min': np.min(response_lengths),
                     'Max': np.max(response_lengths),
+                    '3%': np.percentile(response_lengths, 3),
                     '10%': np.percentile(response_lengths, 10),
                     '25%': np.percentile(response_lengths, 25),
                     'Median': np.median(response_lengths),
                     '75%': np.percentile(response_lengths, 75),
                     '90%': np.percentile(response_lengths, 90),
+                    '97%': np.percentile(response_lengths, 97)
                 },
-                'Reward Statistics': {
+                'Reward': {
                     'Mean': np.mean(rewards),
                     'Std': np.std(rewards),
                     'Min': np.min(rewards),
                     'Max': np.max(rewards),
+                    '3%': np.percentile(rewards, 3),
                     '10%': np.percentile(rewards, 10),
                     '25%': np.percentile(rewards, 25),
                     'Median': np.median(rewards),
                     '75%': np.percentile(rewards, 75),
-                    '90%': np.percentile(rewards, 90)
+                    '90%': np.percentile(rewards, 90),
+                    '97%': np.percentile(rewards, 97)
                 }
             }
-
-            # Print statistics
-            print("\nGeneration Statistics:")
-            print(pd.DataFrame(stats).round(4))
+        
+            # Create a rich table
+            table = Table(title=f"Generation Statistics: {args.model_name}", show_lines=True)
+        
+            # Add columns to the table
+            table.add_column("Metric", justify="left", style="cyan", no_wrap=True)
+            table.add_column("Response Length", justify="right", style="green")
+            table.add_column("Reward", justify="right", style="magenta")
+        
+            # Add rows for each metric
+            metrics = ['Mean', 'Std', 'Min', 'Max', '3%', '10%', '25%', 'Median', '75%', '90%', '97%']
+            for metric in metrics:
+                table.add_row(
+                    metric,
+                    f"{stats['Response Length'][metric]:.4f}",
+                    f"{stats['Reward'][metric]:.4f}"
+                )
+        
+            # Print the table using rich
+            console.print(table)
+        
         else:
-            print("\nNo data to calculate statistics.")
+            console.print("\n[bold red]No data to calculate statistics.[/bold red]")
 
     finally:
         tp_executor.shutdown()
