@@ -253,9 +253,15 @@ class SimpleMarginPOTrainer(Trainer):
         self.margin_delta = args.margin_delta
         self.chosen_sft_ratio = args.chosen_sft_ratio
         self.loss_type = args.loss_type
+        self.lower_trim_percentile = args.lower_trim_percentile
+        self.upper_trim_percentile = args.upper_trim_percentile
 
         assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
         assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
+        if args.lower_trim_percentile is not None:
+            assert args.lower_trim_percentile > 0 and args.lower_trim_percentile <= 0.5, "lower_trim_percentile must > 0 and <= 0.5"
+        if args.upper_trim_percentile is not None:
+            assert args.upper_trim_percentile < 1 and args.lower_trim_percentile >= 0.5, "lower_trim_percentile must < 1 and >= 0.5"
         
         if args.margin_delta > 0 and args.loss_type != 'smooth_double_bound':
             warnings.warn(
@@ -640,7 +646,9 @@ class SimpleMarginPOTrainer(Trainer):
             concatenated_batch["concatenated_labels"],
             average_log_prob=True,  # SimpleMarginPO/IPO mode
             is_encoder_decoder=self.is_encoder_decoder,
-            label_pad_token_id=self.label_pad_token_id
+            label_pad_token_id=self.label_pad_token_id,
+            lower_trim_percentile=self.lower_trim_percentile,
+            upper_trim_percentile=self.upper_trim_percentile
         )
 
         chosen_logps = all_logps[:len_chosen]
@@ -654,39 +662,77 @@ class SimpleMarginPOTrainer(Trainer):
 
         return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_labels, rejected_labels)
 
+    # @staticmethod
+    # def get_batch_logps(
+    #     logits: torch.FloatTensor,
+    #     labels: torch.LongTensor,
+    #     average_log_prob: bool = True,
+    #     label_pad_token_id: int = -100,
+    #     is_encoder_decoder: bool = False,
+    # ) -> torch.FloatTensor:
+    #     """Compute the log probabilities of the given labels under the given logits.
+
+    #     Args:
+    #         logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+    #         labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
+    #         average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+    #         label_pad_token_id: The label pad token id.
+    #         is_encoder_decoder: Whether the model is an encoder-decoder model.
+
+    #     Returns:
+    #         A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+    #     """
+    #     if logits.shape[:-1] != labels.shape:
+    #         raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+
+    #     if not is_encoder_decoder:
+    #         labels = labels[:, 1:].clone()
+    #         logits = logits[:, :-1, :]
+    #     loss_mask = labels != label_pad_token_id
+
+    #     # dummy tokens; we'll ignore the losses on these tokens later
+    #     labels[(labels == label_pad_token_id)] = 0
+
+    #     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+    #     if average_log_prob:
+    #         return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+    #     else:
+    #         return (per_token_logps * loss_mask).sum(-1)
+
     @staticmethod
     def get_batch_logps(
         logits: torch.FloatTensor,
         labels: torch.LongTensor,
+        lower_trim_percentile: float = None,
+        upper_trim_percentile: float = None,
         average_log_prob: bool = True,
         label_pad_token_id: int = -100,
         is_encoder_decoder: bool = False,
     ) -> torch.FloatTensor:
-        """Compute the log probabilities of the given labels under the given logits.
-
-        Args:
-            logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
-            labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
-            average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-            label_pad_token_id: The label pad token id.
-            is_encoder_decoder: Whether the model is an encoder-decoder model.
-
-        Returns:
-            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
-        """
         if logits.shape[:-1] != labels.shape:
             raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-
+    
         if not is_encoder_decoder:
             labels = labels[:, 1:].clone()
             logits = logits[:, :-1, :]
         loss_mask = labels != label_pad_token_id
-
-        # dummy tokens; we'll ignore the losses on these tokens later
+    
         labels[(labels == label_pad_token_id)] = 0
-
+    
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+    
+        # Trim extremal values
+        if lower_trim_percentile is not None:
+            per_token_logps_float = per_token_logps[loss_mask].detach().float()
+            lower_bound = torch.quantile(per_token_logps_float, lower_trim_percentile, dim=-1)
+            loss_mask = torch.where(per_token_logps < lower_bound, False, loss_mask)
 
+        if upper_trim_percentile is not None:
+            per_token_logps_float = per_token_logps[loss_mask].detach().float()
+            upper_bound = torch.quantile(per_token_logps_float, upper_trim_percentile, dim=-1)
+            loss_mask = torch.where(per_token_logps > upper_bound, False, loss_mask)
+        
         if average_log_prob:
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
         else:
@@ -734,7 +780,7 @@ class SimpleMarginPOTrainer(Trainer):
         rejeced_sft_loss = loss_func(policy_rejected_logits.view(-1, policy_rejected_logits.shape[-1]), rejected_labels.view(-1))
         metrics[f"{prefix}rejected_sft_loss"] = rejeced_sft_loss.detach().cpu()
         
-        metrics[f"{prefix}mean_sft_loss"] = (chosen_sft_loss.detach().cpu() + rejeced_sft_loss.detach().cpu()) / 2
+        metrics[f"{prefix}weighted_sft_loss"] = chosen_sft_loss.detach().cpu() + rejeced_sft_loss.detach().cpu() * (1 - self.chosen_sft_ratio)
 
         combined_sft_loss = chosen_sft_loss * self.chosen_sft_ratio + rejeced_sft_loss * (1 - self.chosen_sft_ratio)
         loss = combined_sft_loss + loss
