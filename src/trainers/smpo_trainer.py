@@ -253,15 +253,19 @@ class SimpleMarginPOTrainer(Trainer):
         self.margin_delta = args.margin_delta
         self.chosen_sft_ratio = args.chosen_sft_ratio
         self.loss_type = args.loss_type
-        self.lower_trim_percentile = args.lower_trim_percentile
-        self.upper_trim_percentile = args.upper_trim_percentile
+        self.lower_clip_percentile = args.lower_clip_percentile
+        self.upper_clip_percentile = args.upper_clip_percentile
+        self.min_log_prob = args.min_log_prob
+        self.special_token_id = self.processing_class.eos_token_id
 
         assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
         assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
-        if args.lower_trim_percentile is not None:
-            assert args.lower_trim_percentile > 0 and args.lower_trim_percentile <= 0.5, "lower_trim_percentile must > 0 and <= 0.5"
-        if args.upper_trim_percentile is not None:
-            assert args.upper_trim_percentile < 1 and args.lower_trim_percentile >= 0.5, "lower_trim_percentile must < 1 and >= 0.5"
+        if args.lower_clip_percentile is not None:
+            assert args.lower_clip_percentile > 0 and args.lower_clip_percentile <= 0.5, "lower_trim_percentile must > 0 and <= 0.5"
+        if args.upper_clip_percentile is not None:
+            assert args.upper_clip_percentile < 1 and args.upper_trim_percentile >= 0.5, "lower_trim_percentile must < 1 and >= 0.5"
+        if args.min_log_prob is not None:
+            assert args.min_log_prob < 0, "min_log_prob must be below zero, recommended value: -2.3"
         
         if args.margin_delta > 0 and args.loss_type != 'smooth_double_bound':
             warnings.warn(
@@ -275,9 +279,9 @@ class SimpleMarginPOTrainer(Trainer):
         # see: https://github.com/huggingface/trl/pull/1255
         with PartialState().local_main_process_first():
             # tokenize the dataset
-            train_dataset = train_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc)
+            train_dataset = train_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc, keep_in_memory=True)
             if eval_dataset is not None:
-                eval_dataset = eval_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc)
+                eval_dataset = eval_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc, keep_in_memory=True)
 
         super().__init__(
             model=model,
@@ -644,11 +648,14 @@ class SimpleMarginPOTrainer(Trainer):
         all_logps = self.get_batch_logps(
             all_logits,
             concatenated_batch["concatenated_labels"],
+            len_chosen,
             average_log_prob=True,  # SimpleMarginPO/IPO mode
             is_encoder_decoder=self.is_encoder_decoder,
             label_pad_token_id=self.label_pad_token_id,
-            lower_trim_percentile=self.lower_trim_percentile,
-            upper_trim_percentile=self.upper_trim_percentile
+            lower_clip_percentile=self.lower_clip_percentile,
+            upper_clip_percentile=self.upper_clip_percentile,
+            min_log_prob=self.min_log_prob,
+            special_token_id=self.special_token_id
         )
 
         chosen_logps = all_logps[:len_chosen]
@@ -704,10 +711,13 @@ class SimpleMarginPOTrainer(Trainer):
     def get_batch_logps(
         logits: torch.FloatTensor,
         labels: torch.LongTensor,
-        lower_trim_percentile: float = None,
-        upper_trim_percentile: float = None,
+        chosen_count: int,
+        lower_clip_percentile: float = None,
+        upper_clip_percentile: float = None,
+        min_log_prob: float = None,
         average_log_prob: bool = True,
         label_pad_token_id: int = -100,
+        special_token_id: int = None,
         is_encoder_decoder: bool = False,
     ) -> torch.FloatTensor:
         if logits.shape[:-1] != labels.shape:
@@ -721,17 +731,33 @@ class SimpleMarginPOTrainer(Trainer):
         labels[(labels == label_pad_token_id)] = 0
     
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+        # Invert logp for special_token_id
+        if special_token_id is not None:
+            special_token_mask = (labels == special_token_id) & loss_mask
+            per_token_logps[special_token_mask] = -per_token_logps[special_token_mask]
     
         # Trim extremal values
-        if lower_trim_percentile is not None:
-            per_token_logps_float = per_token_logps[loss_mask].detach().float()
-            lower_bound = torch.quantile(per_token_logps_float, lower_trim_percentile, dim=-1)
-            loss_mask = torch.where(per_token_logps < lower_bound, False, loss_mask)
+        if lower_clip_percentile is not None:
+            per_token_logps_float = per_token_logps[loss_mask][chosen_count:].detach().float()
+            lower_bound = torch.quantile(per_token_logps_float, lower_clip_percentile, dim=-1)
+            per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < lower_bound,
+                                                         lower_bound,
+                                                         per_token_logps[loss_mask][chosen_count:])
+            # loss_mask[chosen_count:] = torch.where(per_token_logps[chosen_count:] < lower_bound, False, loss_mask[chosen_count:])
 
-        if upper_trim_percentile is not None:
-            per_token_logps_float = per_token_logps[loss_mask].detach().float()
-            upper_bound = torch.quantile(per_token_logps_float, upper_trim_percentile, dim=-1)
-            loss_mask = torch.where(per_token_logps > upper_bound, False, loss_mask)
+        if upper_clip_percentile is not None:
+            per_token_logps_float = per_token_logps[loss_mask][:chosen_count].detach().float()
+            upper_bound = torch.quantile(per_token_logps_float, upper_clip_percentile, dim=-1)
+            per_token_logps[loss_mask][:chosen_count] = torch.where(per_token_logps[loss_mask][:chosen_count] > upper_bound,
+                                                         upper_bound,
+                                                         per_token_logps[loss_mask][:chosen_count])
+            # loss_mask[:chosen_count] = torch.where(per_token_logps[:chosen_count] > upper_bound, False, loss_mask[:chosen_count])
+
+        if min_log_prob is not None:
+            per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < min_log_prob,
+                                                                    min_log_prob,
+                                                                    per_token_logps[loss_mask][chosen_count:])
         
         if average_log_prob:
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)

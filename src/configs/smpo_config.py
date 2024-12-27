@@ -29,10 +29,12 @@ class SimpleMarginPOConfig(TrainingArguments):
             SFT loss balance weight between chosen and rejected, used in the SimpleMarginPO loss (1.0 will use maximum of chosen loss and zero of rejected loss).
         loss_type (`str`, defaults to `smooth_lower_bound`):
             The type of loss to use. This argument is required if you want to use the default data collator.
-        lower_trim_percentile (`Optional[float]`, defaults to 0.02):
-            Lower percentile of token log probs value allowed for PO loss calculation. Recommended range [0.01, 0.05]
-        upper_trim_percentile (`Optional[float]`, defaults to `None`):
-            Upper percentile of token log probs value allowed for PO loss calculation. Recommended range [0.95, 0.99]
+        lower_clip_percentile (`Optional[float]`, defaults to 0.02):
+            Lower percentile of token log probs value allowed for PO loss calculation for rejected completions. Works like winsorizing. Recommended range [0.01, 0.05]
+        min_log_prob (`Optional[float]`, defaults to -2.3):
+            Lowest possible token log prob value allowed in rejected completions. Will clip all log probs, works after percentile winsorizing.
+        upper_clip_percentile (`Optional[float]`, defaults to `None`):
+            Upper percentile of token log probs value allowed for PO loss calculation for chosen completions. Works like winsorizing. Recommended range [0.95, 0.99]
         label_pad_token_id (`int`, defaults to `-100`):
             The label pad token id. This argument is required if you want to use the default data collator.
         padding_value (`int`, defaults to `None`):
@@ -60,8 +62,9 @@ class SimpleMarginPOConfig(TrainingArguments):
     margin_min: float = 0.35
     margin_delta: float = 0.2
     chosen_sft_ratio: float = 0.8
-    lower_trim_percentile: Optional[float] = 0.02
-    upper_trim_percentile: Optional[float] = None
+    lower_clip_percentile: Optional[float] = 0.02
+    upper_clip_percentile: Optional[float] = None
+    min_log_prob: Optional[float] = -2.3
     
     loss_type: Literal['sigmoid', 'hinge', 'ipo', 'smooth_lower_bound', 'smooth_double_bound'] = "smooth_lower_bound"
     disable_dropout: bool = True
