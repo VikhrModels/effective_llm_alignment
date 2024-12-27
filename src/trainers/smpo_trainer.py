@@ -256,7 +256,7 @@ class SimpleMarginPOTrainer(Trainer):
         self.lower_clip_percentile = args.lower_clip_percentile
         self.upper_clip_percentile = args.upper_clip_percentile
         self.min_log_prob = args.min_log_prob
-        self.special_token_id = self.processing_class.eos_token_id
+        self.special_token_id = self.tokenizer.eos_token_id
 
         assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
         assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
@@ -732,12 +732,12 @@ class SimpleMarginPOTrainer(Trainer):
     
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
-        # Invert logp for special_token_id
+        # Invert logp for special_token_id for rejected tokens
         if special_token_id is not None:
             special_token_mask = (labels == special_token_id) & loss_mask
-            per_token_logps[special_token_mask] = -per_token_logps[special_token_mask]
+            per_token_logps[special_token_mask][chosen_count:] = -per_token_logps[special_token_mask][chosen_count:]
     
-        # Trim extremal values
+        # Winsorize extremal values for rejected tokens
         if lower_clip_percentile is not None:
             per_token_logps_float = per_token_logps[loss_mask][chosen_count:].detach().float()
             lower_bound = torch.quantile(per_token_logps_float, lower_clip_percentile, dim=-1)
@@ -746,6 +746,7 @@ class SimpleMarginPOTrainer(Trainer):
                                                          per_token_logps[loss_mask][chosen_count:])
             # loss_mask[chosen_count:] = torch.where(per_token_logps[chosen_count:] < lower_bound, False, loss_mask[chosen_count:])
 
+        # Winsorize extremal values for chosen tokens
         if upper_clip_percentile is not None:
             per_token_logps_float = per_token_logps[loss_mask][:chosen_count].detach().float()
             upper_bound = torch.quantile(per_token_logps_float, upper_clip_percentile, dim=-1)
@@ -754,6 +755,7 @@ class SimpleMarginPOTrainer(Trainer):
                                                          per_token_logps[loss_mask][:chosen_count])
             # loss_mask[:chosen_count] = torch.where(per_token_logps[:chosen_count] > upper_bound, False, loss_mask[:chosen_count])
 
+        # Clip minimum logprob for rejected tokens
         if min_log_prob is not None:
             per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < min_log_prob,
                                                                     min_log_prob,
