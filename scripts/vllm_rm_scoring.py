@@ -48,11 +48,6 @@ elif args.api_type == 'azure':
         azure_endpoint=args.openai_base_url,
         api_version="2024-08-01-preview"
     )
-elif args.api_type == 'eliza':
-    client = AsyncOpenAI(
-        api_key=args.openai_api_key,
-        base_url='http://soyproxy.yandex-team.ru/proxy/openai/v1/',
-    )
 
 # Load Reward Model
 print('Loading Reward Model...')
@@ -141,8 +136,6 @@ async def generate_and_evaluate(row: pd.Series, responses, rewards):
                 response_format=response_format,
                 max_tokens=args.max_gen_tokens
             )
-            if args.api_type == 'eliza':
-                completion = ChatCompletion(**completion.response)
 
             response = completion.choices[0].message.model_dump(
                 exclude={"function_call", "tool_calls", "refusal", "audio"}
