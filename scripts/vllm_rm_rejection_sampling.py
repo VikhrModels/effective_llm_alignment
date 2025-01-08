@@ -76,7 +76,7 @@ semaphore = asyncio.Semaphore(args.n_parallel)
 write_lock = asyncio.Lock()
 
 # Файл для сохранения результатов
-output_file = f'{args.output_folder}/{args.prompts_source.split("/")[-1].split(".")[-2]}_{args.model_name.split("/")[-1].lower()}_rs.jsonl'
+output_file = f'{args.output_folder}/{args.prompts_source.split("/")[-1].split(".")[-2]}_rs.jsonl'
 if not os.path.exists(args.output_folder):
     os.makedirs(args.output_folder)
 
@@ -202,7 +202,9 @@ async def score_and_select():
                 'rejected': [generated_conversations[worst_idx][-1]],
                 'rejected_score': float(scores[worst_idx]),
                 'all_generations': [conv[-1] for conv in generated_conversations],
-                'all_scores': [float(score) for score in scores]
+                'all_scores': [float(score) for score in scores],
+                'gen_model': args.model_name,
+                'rm_model': args.rm_model_path
             }
             if args.correct_answer_field in row:
                 result['target_answer'] = row[args.correct_answer_field ]
