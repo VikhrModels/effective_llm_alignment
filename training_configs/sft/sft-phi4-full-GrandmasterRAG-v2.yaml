@@ -1,0 +1,38 @@
+model_name_or_path: "checkpoints/phi-4-original/phi-4/"
+dataset:
+  - "Vikhrmodels/GrandMaster-PRO-MAX"
+  - "Vikhrmodels/Grounded-RAG-RU-v2"
+train_only_on_completions: True
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+num_train_epochs: 1
+save_strategy: "steps"
+save_steps: 400
+save_total_limit: 6
+learning_rate: 0.00004
+gradient_accumulation_steps: 8
+gradient_checkpointing: True
+logging_steps: 1
+remove_unused_columns: False
+dataloader_num_workers: 2
+save_only_model: True
+generate_eval_examples: True
+use_liger: True
+max_seq_length: 16384
+attn_implementation: "sdpa"
+evaluation_strategy: "steps"
+eval_steps: 400
+run_name: "sft-grndmrag-phi4-full-v2"
+output_dir: "checkpoints/sft-grndmrag-phi4-full-v2"
+warmup_steps: 20
+report_to: "wandb"
+conversation_field: "conversation"
+bf16: True
+seed: 42
+logging_first_step: True
+use_peft: False
+assistant_message_template: "<|im_start|>assistant<|im_sep|>"
+pad_token: "<|dummy_0|>"
+eos_token: "<|im_end|>"
+chat_template: "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|im_start|>' + message['role'] + '<|im_sep|>'+ message['content'] | trim + '<|im_end|>' %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant<|im_sep|>' }}{% endif %}"
+force_chat_template: True

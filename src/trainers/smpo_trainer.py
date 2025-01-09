@@ -1,4 +1,3 @@
-
 import inspect
 import random
 import warnings
@@ -14,13 +13,11 @@ import torch.nn.functional as F
 from accelerate import PartialState
 from datasets import Dataset
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, DataCollator, PreTrainedModel, PreTrainedTokenizerBase, Trainer
+from transformers import AutoModelForCausalLM, DataCollator, PreTrainedModel, PreTrainedTokenizerBase, Trainer, is_wandb_available
 from trl.trainer import CPOTrainer
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput
-from transformers.utils import is_torch_fx_proxy
-
-from trl.import_utils import is_peft_available, is_wandb_available
+from transformers.utils import is_torch_fx_proxy, is_peft_available
 
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional
@@ -256,8 +253,19 @@ class SimpleMarginPOTrainer(Trainer):
         self.margin_delta = args.margin_delta
         self.chosen_sft_ratio = args.chosen_sft_ratio
         self.loss_type = args.loss_type
+        self.lower_clip_percentile = args.lower_clip_percentile
+        self.upper_clip_percentile = args.upper_clip_percentile
+        self.min_log_prob = args.min_log_prob
+        self.special_token_id = self.tokenizer.eos_token_id
 
         assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
+        assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
+        if args.lower_clip_percentile is not None:
+            assert args.lower_clip_percentile > 0 and args.lower_clip_percentile <= 0.5, "lower_trim_percentile must > 0 and <= 0.5"
+        if args.upper_clip_percentile is not None:
+            assert args.upper_clip_percentile < 1 and args.upper_trim_percentile >= 0.5, "lower_trim_percentile must < 1 and >= 0.5"
+        if args.min_log_prob is not None:
+            assert args.min_log_prob < 0, "min_log_prob must be below zero, recommended value: -2.3"
         
         if args.margin_delta > 0 and args.loss_type != 'smooth_double_bound':
             warnings.warn(
@@ -265,17 +273,15 @@ class SimpleMarginPOTrainer(Trainer):
                 f" It only works with 'smooth_double_bound' loss_type."
             )
 
-        assert args.margin_min > 0 and args.loss_type not in ['hinge', 'sigmoid'], "margin_min must be greater then 0"
-
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
         # Compute that only on the main process for faster data processing.
         # see: https://github.com/huggingface/trl/pull/1255
         with PartialState().local_main_process_first():
             # tokenize the dataset
-            train_dataset = train_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc)
+            train_dataset = train_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc, keep_in_memory=True)
             if eval_dataset is not None:
-                eval_dataset = eval_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc)
+                eval_dataset = eval_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc, keep_in_memory=True)
 
         super().__init__(
             model=model,
@@ -308,8 +314,8 @@ class SimpleMarginPOTrainer(Trainer):
             https://github.com/EleutherAI/lm-evaluation-harness/pull/531#issuecomment-1595586257
         """
 
-        full_tokenized = self.tokenizer(prompt + answer, add_special_tokens=False)
-        prompt_input_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        full_tokenized = self.processing_class(prompt + answer, add_special_tokens=False)
+        prompt_input_ids = self.processing_class(prompt, add_special_tokens=False)["input_ids"]
 
         answer_input_ids = full_tokenized["input_ids"][len(prompt_input_ids) :]
         answer_attention_mask = full_tokenized["attention_mask"][len(prompt_input_ids) :]
@@ -374,7 +380,7 @@ class SimpleMarginPOTrainer(Trainer):
 
             if not isinstance(prompt, str):
                 raise ValueError(f"prompt should be an str but got {type(prompt)}")
-            prompt_tokens = self.tokenizer(prompt, add_special_tokens=False)
+            prompt_tokens = self.processing_class(prompt, add_special_tokens=False)
             prompt_tokens = {f"prompt_{k}": v for k, v in prompt_tokens.items()}
 
             if not isinstance(chosen, str):
@@ -409,7 +415,7 @@ class SimpleMarginPOTrainer(Trainer):
                 )
 
             # add BOS token to head of prompt. Avoid adding if it's already there
-            bos_token_id = self.tokenizer.bos_token_id
+            bos_token_id = self.processing_class.bos_token_id
             if (prompt_len_input_ids == 0 or bos_token_id != prompt_tokens["prompt_input_ids"][0]) and bos_token_id is not None:
                 prompt_tokens["prompt_input_ids"] = [bos_token_id] + prompt_tokens["prompt_input_ids"]
                 prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
@@ -421,7 +427,7 @@ class SimpleMarginPOTrainer(Trainer):
                 rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens["prompt_attention_mask"]
 
             # add EOS token to end of answer. Avoid adding if it's already there
-            eos_token_id = self.tokenizer.eos_token_id
+            eos_token_id = self.processing_class.eos_token_id
             if len(chosen_tokens["input_ids"]) == 0 or eos_token_id != chosen_tokens["input_ids"][-1]:
                 chosen_tokens["input_ids"].append(eos_token_id)
                 chosen_tokens["attention_mask"].append(1)
@@ -476,13 +482,13 @@ class SimpleMarginPOTrainer(Trainer):
                     batch[f"{k}{type_key}"] = tokens
 
         else:
-            chosen_tokens = self.tokenizer(
+            chosen_tokens = self.processing_class(
                 chosen, truncation=True, max_length=self.max_target_length, add_special_tokens=True
             )
-            rejected_tokens = self.tokenizer(
+            rejected_tokens = self.processing_class(
                 rejected, truncation=True, max_length=self.max_target_length, add_special_tokens=True
             )
-            prompt_tokens = self.tokenizer(
+            prompt_tokens = self.processing_class(
                 prompt, truncation=True, max_length=self.max_prompt_length, add_special_tokens=True
             )
 
@@ -590,7 +596,7 @@ class SimpleMarginPOTrainer(Trainer):
                 -F.logsigmoid(self.beta * logits_lower_bound)
             )
         elif self.loss_type == "hinge":
-            losses = torch.relu(1 - self.beta * logits_lower_bound)
+            losses = torch.relu(-self.beta * logits_lower_bound)
         elif self.loss_type == "ipo":
             losses = (self.beta * logits_lower_bound).pow(2)
         elif self.loss_type == "smooth_lower_bound":
@@ -642,9 +648,14 @@ class SimpleMarginPOTrainer(Trainer):
         all_logps = self.get_batch_logps(
             all_logits,
             concatenated_batch["concatenated_labels"],
+            len_chosen,
             average_log_prob=True,  # SimpleMarginPO/IPO mode
             is_encoder_decoder=self.is_encoder_decoder,
-            label_pad_token_id=self.label_pad_token_id
+            label_pad_token_id=self.label_pad_token_id,
+            lower_clip_percentile=self.lower_clip_percentile,
+            upper_clip_percentile=self.upper_clip_percentile,
+            min_log_prob=self.min_log_prob,
+            special_token_id=self.special_token_id
         )
 
         chosen_logps = all_logps[:len_chosen]
@@ -658,39 +669,98 @@ class SimpleMarginPOTrainer(Trainer):
 
         return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_labels, rejected_labels)
 
+    # @staticmethod
+    # def get_batch_logps(
+    #     logits: torch.FloatTensor,
+    #     labels: torch.LongTensor,
+    #     average_log_prob: bool = True,
+    #     label_pad_token_id: int = -100,
+    #     is_encoder_decoder: bool = False,
+    # ) -> torch.FloatTensor:
+    #     """Compute the log probabilities of the given labels under the given logits.
+
+    #     Args:
+    #         logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+    #         labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
+    #         average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+    #         label_pad_token_id: The label pad token id.
+    #         is_encoder_decoder: Whether the model is an encoder-decoder model.
+
+    #     Returns:
+    #         A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+    #     """
+    #     if logits.shape[:-1] != labels.shape:
+    #         raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+
+    #     if not is_encoder_decoder:
+    #         labels = labels[:, 1:].clone()
+    #         logits = logits[:, :-1, :]
+    #     loss_mask = labels != label_pad_token_id
+
+    #     # dummy tokens; we'll ignore the losses on these tokens later
+    #     labels[(labels == label_pad_token_id)] = 0
+
+    #     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+    #     if average_log_prob:
+    #         return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+    #     else:
+    #         return (per_token_logps * loss_mask).sum(-1)
+
     @staticmethod
     def get_batch_logps(
         logits: torch.FloatTensor,
         labels: torch.LongTensor,
+        chosen_count: int,
+        lower_clip_percentile: float = None,
+        upper_clip_percentile: float = None,
+        min_log_prob: float = None,
         average_log_prob: bool = True,
         label_pad_token_id: int = -100,
+        special_token_id: int = None,
         is_encoder_decoder: bool = False,
     ) -> torch.FloatTensor:
-        """Compute the log probabilities of the given labels under the given logits.
-
-        Args:
-            logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
-            labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
-            average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-            label_pad_token_id: The label pad token id.
-            is_encoder_decoder: Whether the model is an encoder-decoder model.
-
-        Returns:
-            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
-        """
         if logits.shape[:-1] != labels.shape:
             raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-
+    
         if not is_encoder_decoder:
             labels = labels[:, 1:].clone()
             logits = logits[:, :-1, :]
         loss_mask = labels != label_pad_token_id
-
-        # dummy tokens; we'll ignore the losses on these tokens later
+    
         labels[(labels == label_pad_token_id)] = 0
-
+    
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
+        # Invert logp for special_token_id for rejected tokens
+        if special_token_id is not None:
+            special_token_mask = (labels == special_token_id) & loss_mask
+            per_token_logps[special_token_mask][chosen_count:] = -per_token_logps[special_token_mask][chosen_count:]
+    
+        # Winsorize extremal values for rejected tokens
+        if lower_clip_percentile is not None:
+            per_token_logps_float = per_token_logps[loss_mask][chosen_count:].detach().float()
+            lower_bound = torch.quantile(per_token_logps_float, lower_clip_percentile, dim=-1)
+            per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < lower_bound,
+                                                         lower_bound,
+                                                         per_token_logps[loss_mask][chosen_count:])
+            # loss_mask[chosen_count:] = torch.where(per_token_logps[chosen_count:] < lower_bound, False, loss_mask[chosen_count:])
+
+        # Winsorize extremal values for chosen tokens
+        if upper_clip_percentile is not None:
+            per_token_logps_float = per_token_logps[loss_mask][:chosen_count].detach().float()
+            upper_bound = torch.quantile(per_token_logps_float, upper_clip_percentile, dim=-1)
+            per_token_logps[loss_mask][:chosen_count] = torch.where(per_token_logps[loss_mask][:chosen_count] > upper_bound,
+                                                         upper_bound,
+                                                         per_token_logps[loss_mask][:chosen_count])
+            # loss_mask[:chosen_count] = torch.where(per_token_logps[:chosen_count] > upper_bound, False, loss_mask[:chosen_count])
+
+        # Clip minimum logprob for rejected tokens
+        if min_log_prob is not None:
+            per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < min_log_prob,
+                                                                    min_log_prob,
+                                                                    per_token_logps[loss_mask][chosen_count:])
+        
         if average_log_prob:
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
         else:
@@ -738,7 +808,7 @@ class SimpleMarginPOTrainer(Trainer):
         rejeced_sft_loss = loss_func(policy_rejected_logits.view(-1, policy_rejected_logits.shape[-1]), rejected_labels.view(-1))
         metrics[f"{prefix}rejected_sft_loss"] = rejeced_sft_loss.detach().cpu()
         
-        metrics[f"{prefix}mean_sft_loss"] = (chosen_sft_loss.detach().cpu() + rejeced_sft_loss.detach().cpu()) / 2
+        metrics[f"{prefix}weighted_sft_loss"] = chosen_sft_loss.detach().cpu() + rejeced_sft_loss.detach().cpu() * (1 - self.chosen_sft_ratio)
 
         combined_sft_loss = chosen_sft_loss * self.chosen_sft_ratio + rejeced_sft_loss * (1 - self.chosen_sft_ratio)
         loss = combined_sft_loss + loss
@@ -781,27 +851,6 @@ class SimpleMarginPOTrainer(Trainer):
         if return_outputs:
             return (loss, metrics)
         return loss
-
-    def get_batch_samples(self, model, batch: Dict[str, torch.LongTensor]) -> Tuple[str, str]:
-        """Generate samples from the model and reference model for the given batch of inputs."""
-
-        # If one uses `generate_during_eval` with peft + bf16, we need to explicitly call generate with
-        # the torch cuda amp context manager as some hidden states are silently casted to full precision.
-        generate_context_manager = nullcontext if not self._peft_has_been_casted_to_bf16 else torch.cuda.amp.autocast
-
-        with generate_context_manager():
-            policy_output = model.generate(
-                input_ids=batch["prompt_input_ids"],
-                attention_mask=batch["prompt_attention_mask"],
-                max_length=self.max_length,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-
-        policy_output = pad_to_length(policy_output, self.max_length, self.tokenizer.pad_token_id)
-        policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
-
-        return policy_output_decoded
 
     def prediction_step(
         self,
@@ -847,55 +896,7 @@ class SimpleMarginPOTrainer(Trainer):
         for key, value in metrics.items():
             self._stored_metrics[train_eval][key].append(value)
 
-    def evaluation_loop(
-        self,
-        dataloader: DataLoader,
-        description: str,
-        prediction_loss_only: Optional[bool] = None,
-        ignore_keys: Optional[List[str]] = None,
-        metric_key_prefix: str = "eval",
-    ) -> EvalLoopOutput:
-        """
-        Overriding built-in evaluation loop to store metrics for each batch.
-        Prediction/evaluation loop, shared by `Trainer.evaluate()` and `Trainer.predict()`.
-
-        Works both with or without labels.
-        """
-
-        # Sample and save to game log if requested (for one batch to save time)
-        if self.generate_during_eval:
-            # Generate random indices within the range of the total number of samples
-            num_samples = len(dataloader.dataset)
-            random_indices = random.sample(range(num_samples), k=self.args.eval_batch_size)
-
-            # Use dataloader.dataset.select to get the random batch without iterating over the DataLoader
-            random_batch_dataset = dataloader.dataset.select(random_indices)
-            random_batch = self.data_collator(random_batch_dataset)
-            random_batch = self._prepare_inputs(random_batch)
-
-            policy_output_decoded = self.get_batch_samples(self.model, random_batch)
-
-            self.log(
-                {
-                    "game_log": wandb.Table(
-                        columns=["Prompt", "Policy"],
-                        rows=[
-                            [prompt, pol[len(prompt) :]]
-                            for prompt, pol in zip(random_batch["prompt"], policy_output_decoded)
-                        ],
-                    )
-                }
-            )
-            self.state.log_history.pop()
-
-        # Base evaluation
-        initial_output = super().evaluation_loop(
-            dataloader, description, prediction_loss_only, ignore_keys, metric_key_prefix
-        )
-
-        return initial_output
-
-    def log(self, logs: Dict[str, float]) -> None:
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
         """
         Log `logs` on the various objects watching training, including stored metrics.
 
@@ -909,7 +910,7 @@ class SimpleMarginPOTrainer(Trainer):
         for key, metrics in self._stored_metrics[train_eval].items():
             logs[key] = torch.tensor(metrics).mean().item()
         del self._stored_metrics[train_eval]
-        return super().log(logs)
+        return super().log(logs, start_time)
 
     @wraps(Trainer.push_to_hub)
     def push_to_hub(self, commit_message: Optional[str] = "End of training", blocking: bool = True, **kwargs) -> str:
