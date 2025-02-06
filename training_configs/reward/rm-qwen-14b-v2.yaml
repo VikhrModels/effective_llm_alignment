@@ -1,0 +1,45 @@
+model_name_or_path: "Qwen/Qwen2.5-14B-Instruct"
+dataset: "Vikhrmodels/rm_training_dataset_16_12_24"
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+num_train_epochs: 1
+save_strategy: "steps"
+save_steps: 250
+save_total_limit: 6
+learning_rate: 0.0002
+center_rewards_coefficient: 0.01
+gradient_accumulation_steps: 8
+gradient_checkpointing: True
+logging_steps: 1
+remove_unused_columns: True
+dataloader_num_workers: 2
+max_length: 16384
+attn_implementation: "sdpa"
+test_size: 0.05
+evaluation_strategy: "steps"
+eval_steps: 250
+run_name: "rm-qwen2.5-14b-lora-128-all"
+output_dir: "checkpoints/rm-qwen2.5-14b-lora-128-all"
+warmup_steps: 20
+report_to: "wandb"
+bf16: True
+seed: 42
+logging_first_step: True
+use_peft: True
+lora_task_type: SEQ_CLS
+lora_target_modules:
+  - "k_proj"
+  - "v_proj"
+  - "q_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+lora_modules_to_save:
+  - "score"
+lora_r: 128
+lora_alpha: 128
+pad_token: "<|image_pad|>"
+eos_token: "<|im_end|>"
+chat_template: "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|im_start|>' + message['role'] + '\n' + message['content'] | trim + '<|im_end|>' %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant<|im_end|>\n' }}{% endif %}"
+force_chat_template: True

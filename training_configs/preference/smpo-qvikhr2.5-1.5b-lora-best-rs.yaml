@@ -1,0 +1,54 @@
+model_name_or_path: "Vikhrmodels/Vikhr-Qwen-2.5-1.5B-Instruct"
+dataset: "filtered_dataset.jsonl"
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+num_train_epochs: 1.2
+log_level: "info"
+attn_implementation: "sdpa"
+save_strategy: "steps"
+save_steps: 50
+save_total_limit: 20
+learning_rate: 0.00002
+lr_scheduler_type: cosine
+gradient_accumulation_steps: 4
+gradient_checkpointing: True
+logging_steps: 1
+remove_unused_columns: True
+dataloader_num_workers: 2
+dataset_num_proc: 10
+max_length: 8192
+max_prompt_length: 4096
+save_only_model: True
+generate_eval_examples: False
+test_size: 0.05
+evaluation_strategy: "steps"
+eval_steps: 50
+run_name: "smpo-qvikhr2.5-1.5b-lora-128-b1.6-mm0.5-sft0.90-new-epochs-1.2"
+output_dir: "smpo-qvikhr2.5-1.5b-lora-128-b1.6-mm0.5-sft0.90-new-epochs-1.2"
+warmup_steps: 20
+report_to: "wandb"
+beta: 1.6
+margin_min: 0.5
+margin_delta: 0.2
+chosen_sft_ratio: 0.90
+loss_type: "smooth_lower_bound"
+bf16: False
+fp16: True
+seed: 42
+logging_first_step: True
+use_peft: True
+lora_task_type: CAUSAL_LM
+lora_target_modules:
+  - "k_proj"
+  - "v_proj"
+  - "q_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+lora_r: 128
+lora_alpha: 128
+pad_token: "<|endoftext|>"
+eos_token: "<|im_end|>"
+chat_template: "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0]['role'] == 'system' %}\n        {{- messages[0]['content'] }}\n    {%- else %}\n        {{- 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' }}\n    {%- endif %}\n    {{- \"\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0]['role'] == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}\n    {%- else %}\n        {{- '<|im_start|>system\\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- for message in messages %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) or (message.role == \"assistant\" and not message.tool_calls) %}\n        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {{- '<|im_start|>' + message.role }}\n        {%- if message.content %}\n            {{- '\\n' + message.content }}\n        {%- endif %}\n        {%- for tool_call in message.tool_calls %}\n            {%- if tool_call.function is defined %}\n                {%- set tool_call = tool_call.function %}\n            {%- endif %}\n            {{- '\\n<tool_call>\\n{\"name\": \"' }}\n            {{- tool_call.name }}\n            {{- '\", \"arguments\": ' }}\n            {{- tool_call.arguments | tojson }}\n            {{- '}\\n</tool_call>' }}\n        {%- endfor %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- message.content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n{%- endif %}\n"
+force_chat_template: False

@@ -1,0 +1,56 @@
+model_name_or_path: "unsloth/gemma-2-2b-it"
+dataset: 
+  - "qklent/ficbook_no_url_default_sys_prompt"
+  - "qklent/roleplay_ru_gusev_preprocessed"
+  - "Vikhrmodels/GrandMaster-PRO-MAX"
+dataset_ratio:
+  - 1
+  - 1
+  - 0.1
+train_only_on_completions: False
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+num_train_epochs: 1
+save_strategy: "steps"
+save_steps: 2000
+save_total_limit: 3
+learning_rate: 0.000002
+lr_scheduler_type: "cosine"
+gradient_accumulation_steps: 4
+gradient_checkpointing: True
+logging_steps: 10
+remove_unused_columns: True
+dataloader_num_workers: 4
+test_size: 0.005
+generate_eval_examples: True
+num_gen_examples: 20
+evaluation_strategy: "steps"
+eval_steps: 2000
+run_name: "sft-ficbook-gemma-2-2b-it-unsloth-lora-16-64-all-proj"
+output_dir: "/mnt/storage/ficbook_models/gemma-2-2b-zero-16-64-all-proj"
+warmup_ratio: 0.03
+report_to: "wandb"
+conversation_field: "conversation"
+bf16: false
+fp16: true
+seed: 42
+max_seq_length: 2048
+logging_first_step: False
+use_peft: True
+lora_target_modules:
+  - "k_proj"
+  - "v_proj"
+  - "q_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+lora_r: 16
+lora_alpha: 64
+assistant_message_template: "<|im_start|>assistant\n"
+pad_token: "<|reserved_special_token_0|>"
+eos_token: "<|im_end|>"
+chat_template: "{% for message in messages %}{% if message['role'] == 'user' %}{{'<|im_start|>user\n' + message['content'] + '<|im_end|>\n'}}{% elif message['role'] == 'assistant' %}{{'<|im_start|>assistant\n' + message['content'] + '<|im_end|>\n' }}{% else %}{{ '<|im_start|>system\n' + message['content'] + '<|im_end|>\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+force_chat_template: True
+model_support_system_role: False
+attn_implementation: "eager"
