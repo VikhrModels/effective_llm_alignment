@@ -10,10 +10,11 @@ from accelerate.logging import get_logger
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from trl import RewardTrainer, RewardConfig, ModelConfig, get_peft_config
 
-from src.configs.common_script_args import CommonScriptArguments
-from src.utils.datasets import load_datasets
 from src.utils.logger import setup_logging
-from src.utils.model_preparation import setup_model_and_tokenizer
+from src.configs.common_script_args import CommonScriptArguments
+from src.callbacks.training_parameters_callback import ParameterStatsCallback
+from src.utils.datasets import load_datasets
+from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
 from src.utils.yaml_args_parser import H4ArgumentParser
 
 logger = get_logger(__name__)
@@ -46,28 +47,32 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     model = AutoModelForSequenceClassification.from_pretrained(
         model_config.model_name_or_path,
+        # device_map="auto",
         torch_dtype=torch.bfloat16 if reward_config.bf16 else torch.float16,
         # max_position_embeddings=sft_config.max_seq_length,
         attn_implementation=model_config.attn_implementation,
         num_labels=1
     )
 
-    for n, p in model.named_parameters():
-        p.requires_grad = not model_config.use_peft
-
-    peft_config = get_peft_config(model_config)
-
-    if model_config.lora_task_type != "SEQ_CLS":
-        warnings.warn(
-            "You are using a `task_type` that is different than `SEQ_CLS` for PEFT. This will lead to silent bugs"
-            " Make sure to pass --lora_task_type SEQ_CLS when using this script."
-        )
-
     setup_model_and_tokenizer(args, model, tokenizer, reward_config.max_length)
 
+    if model_config.use_peft:
+        for n, p in model.named_parameters():
+            p.requires_grad = False
+        if model_config.lora_task_type != "SEQ_CLS":
+            warnings.warn(
+                "You are using a `task_type` that is different than `SEQ_CLS` for PEFT. This will lead to silent bugs"
+                " Make sure to pass --lora_task_type SEQ_CLS when using this script."
+            )
+        peft_config = get_peft_config(model_config)
+    else:
+        unfreeze_modules_by_patterns(model, ['score', '*.layers.*'])
+        peft_config = None
+
     if PartialState().is_main_process:
-        print(f'Tokenizer: {tokenizer}')
-        print(f'Model config: {model.config}')
+        logger.info(f'Tokenizer: {tokenizer}')
+        logger.info(f'Model config: {model.config}')
+        logger.info(f'Model: {model}')
 
     ################
     # Dataset
@@ -99,16 +104,20 @@ def main():
     ds = ds.map(
         preprocess_function,
         batched=True,
-        num_proc=4,
+        num_proc=8,
+        keep_in_memory=True,
+        load_from_cache_file=False
     )
     train_dataset = ds["train"]
     eval_dataset = ds["test"]
 
     if PartialState().is_main_process:
-        print('Example from train dataset:')
-        print(train_dataset[0])
-        print('Example from test dataset:')
-        print(eval_dataset[0])
+        logger.info('Example from train dataset:')
+        logger.info(train_dataset[0])
+        logger.info('Example from test dataset:')
+        logger.info(eval_dataset[0])
+
+    PartialState().wait_for_everyone()
 
     ################
     # Training
@@ -119,7 +128,8 @@ def main():
         args=reward_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        peft_config=peft_config
+        peft_config=peft_config,
+        callbacks=[ParameterStatsCallback]
     )
 
     # train and save the model

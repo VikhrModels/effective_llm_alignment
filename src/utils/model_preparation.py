@@ -45,6 +45,36 @@ def setup_model_and_tokenizer(
         model.resize_token_embeddings(len(tokenizer))
 
 
+def unfreeze_modules_by_patterns(model, patterns):
+    """
+    Замораживает все параметры модели, затем размораживает те модули,
+    полное имя которых соответствует хотя бы одному паттерну из списка.
+    
+    Аргументы:
+      model: torch.nn.Module – модель (например, экземпляр Qwen2ForSequenceClassification).
+      patterns: список строк – шаблоны для имен модулей (поддерживаются подстановочные знаки * и ?).
+      
+    Пример паттернов:
+      ["*.mlp.up_proj", "score", "model.layers.0.self_attn.*"]
+    """
+    import fnmatch
+
+    # Сначала замораживаем все параметры
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # Проходим по всем модулям модели. model.named_modules() возвращает пары (имя_модуля, модуль).
+    for module_name, module in model.named_modules():
+        # Для каждого модуля проверяем, удовлетворяет ли его имя какому-нибудь паттерну
+        for pattern in patterns:
+            if fnmatch.fnmatch(module_name, pattern):
+                # Если совпадение найдено – размораживаем все параметры этого модуля
+                for param in module.parameters():
+                    param.requires_grad = True
+                # Если наш модуль уже разморожен – переходим к следующему
+                break
+
+
 def prepare_ref_model_for_deepspeed(
         model: PreTrainedModel | nn.Module, accelerator: Accelerator
 ) -> PreTrainedModel | nn.Module:

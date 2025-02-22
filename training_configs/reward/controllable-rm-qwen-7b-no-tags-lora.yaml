@@ -1,0 +1,48 @@
+model_name_or_path: "Qwen/Qwen2.5-7B-Instruct"
+dataset: "Vikhrmodels/controllable_rm_dataset_no_tags"
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 3
+num_train_epochs: 1
+save_strategy: "steps"
+evaluation_strategy: "steps"
+save_steps: 125
+eval_steps: 125
+save_total_limit: 10
+learning_rate: 0.0001
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.05
+center_rewards_coefficient: 0.01
+gradient_accumulation_steps: 16
+gradient_checkpointing: True
+logging_steps: 1
+remove_unused_columns: True
+dataloader_num_workers: 2
+max_length: 16384
+attn_implementation: "sdpa"
+torch_compile: False
+run_name: "controllable-rm-qwen-7b-no-tags-rslora-r256-256-all-2"
+output_dir: "checkpoints/controllable-rm-qwen-7b-no-tags-rslora-r256-256-all-2"
+report_to: "clearml"
+bf16: True
+fp16: False
+seed: 42
+logging_first_step: True
+use_peft: True
+lora_task_type: SEQ_CLS
+lora_target_modules:
+  - "k_proj"
+  - "v_proj"
+  - "q_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+lora_modules_to_save:
+  - "score"
+lora_r: 256
+lora_alpha: 256
+use_rslora: True
+pad_token: "<|image_pad|>"
+eos_token: "<|im_end|>"
+chat_template: "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|im_start|>' + message['role'] + '\n' + message['content'] | trim + '<|im_end|>' %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant<|im_end|>\n' }}{% endif %}"
+force_chat_template: True

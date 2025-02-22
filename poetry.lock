@@ -8120,21 +8120,24 @@ files = [
 
 [[package]]
 name = "wandb"
-version = "0.17.9"
+version = "0.19.6"
 description = "A CLI and library for interacting with the Weights & Biases API."
 optional = false
-python-versions = ">=3.7"
+python-versions = ">=3.8"
 groups = ["main"]
 markers = "python_version >= \"3.10\""
 files = [
-    {file = "wandb-0.17.9-py3-none-any.whl", hash = "sha256:475da9aeb921f49352107d940a5d2a67e5bdc980d561fbdaf990309fe8faeaa4"},
-    {file = "wandb-0.17.9-py3-none-macosx_10_14_x86_64.whl", hash = "sha256:9c056e36f12e1a6e7a03cf2abc806264baad44697bda33b5d901a42dc39f1bf8"},
-    {file = "wandb-0.17.9-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9038d7971a9e86a8cdac4802b43c3167d4f1a00f9f5504b5e323ddec71d2e55a"},
-    {file = "wandb-0.17.9-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a1968d294fc357c8a8cd82c76f8b063a43d4225139bc8d4390100d47978f8f22"},
-    {file = "wandb-0.17.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c1cbb833987e8fd9754e94cbb18bb0564b01bc9c743b67d499700192de0bd154"},
-    {file = "wandb-0.17.9-py3-none-win32.whl", hash = "sha256:a6b83dba8199923ce44da6360a174df6eb8430dc6912e29afb60ad882a4f2c18"},
-    {file = "wandb-0.17.9-py3-none-win_amd64.whl", hash = "sha256:c5dad3d8650ccc84323d86f211cd2af9a66e7ed23dc62c8a897fcb0f4337a394"},
-    {file = "wandb-0.17.9.tar.gz", hash = "sha256:744e27c17636c8f8bdce05c7fe9d17b4814a4196cff313b97b3bf92e7593d2ce"},
+    {file = "wandb-0.19.6-py3-none-any.whl", hash = "sha256:0b174b5f190999a8238961c63c134622bf2173147a1301ea298a9ec58abbd7d4"},
+    {file = "wandb-0.19.6-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:ad2887dd916207ead5a9f36e4aebc1b6624265f29033e4e883bb6fbd5b674080"},
+    {file = "wandb-0.19.6-py3-none-macosx_11_0_arm64.whl", hash = "sha256:ca90dd5519de1a48963536f02d6e14c150475807173b7af1d8ebe3e2f9e3afba"},
+    {file = "wandb-0.19.6-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:3cb10bd1e1c0b568464a017c88eb95e0c8c3e9c1283d9ad4ee717c8977d491c1"},
+    {file = "wandb-0.19.6-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0fe6e7bedd396b2b5f92c7fab3d364f7e0e8cb9f645d0f0c27ba7be94e720931"},
+    {file = "wandb-0.19.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fd9ae9a7f08e4d3972ba341c42af787e951689e0d1a76c111aa66d09bcdadafd"},
+    {file = "wandb-0.19.6-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:ff0973ca26cd06bc5451ae7ba469ad98f74024f5678dfa0d6dc78ca36eb950b6"},
+    {file = "wandb-0.19.6-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:2e8dc997eb3ae5f22f5a1c3d4f3b30c28398dda45b9dbada9ff20b8d3984d3e2"},
+    {file = "wandb-0.19.6-py3-none-win32.whl", hash = "sha256:c0127d99e98202dc2471d44b920129c2c9242fb3a6b52a7aa8bbf9ffa35173e7"},
+    {file = "wandb-0.19.6-py3-none-win_amd64.whl", hash = "sha256:8688a4f724d37a90075312e8dccffd948adbe8b6bcb82f9d2b38b764b53269fb"},
+    {file = "wandb-0.19.6.tar.gz", hash = "sha256:4661856ee070fe8a123caece5b372d495d3cf9f58176a8f981bd716830eefc49"},
 ]
 
 [package.dependencies]
@@ -8142,22 +8145,24 @@ click = ">=7.1,<8.0.0 || >8.0.0"
 docker-pycreds = ">=0.4.0"
 gitpython = ">=1.0.0,<3.1.29 || >3.1.29"
 platformdirs = "*"
-protobuf = {version = ">=3.19.0,<4.21.0 || >4.21.0,<6", markers = "python_version > \"3.9\" or sys_platform != \"linux\""}
+protobuf = {version = ">=3.19.0,<4.21.0 || >4.21.0,<5.28.0 || >5.28.0,<6", markers = "python_version > \"3.9\" or sys_platform != \"linux\""}
 psutil = ">=5.0.0"
+pydantic = ">=2.6,<3"
 pyyaml = "*"
 requests = ">=2.0.0,<3"
-sentry-sdk = ">=1.0.0"
+sentry-sdk = ">=2.0.0"
 setproctitle = "*"
 setuptools = "*"
+typing-extensions = {version = ">=4.4,<5", markers = "python_version < \"3.12\""}
 
 [package.extras]
-aws = ["boto3"]
+aws = ["boto3", "botocore (>=1.5.76)"]
 azure = ["azure-identity", "azure-storage-blob"]
 gcp = ["google-cloud-storage"]
 importers = ["filelock", "mlflow", "polars (<=1.2.1)", "rich", "tenacity"]
 kubeflow = ["google-cloud-storage", "kubernetes", "minio", "sh"]
-launch = ["awscli", "azure-containerregistry", "azure-identity", "azure-storage-blob", "boto3", "botocore", "chardet", "google-auth", "google-cloud-aiplatform", "google-cloud-artifact-registry", "google-cloud-compute", "google-cloud-storage", "iso8601", "jsonschema", "kubernetes", "kubernetes-asyncio", "nbconvert", "nbformat", "optuna", "pydantic", "pyyaml (>=6.0.0)", "tomli", "typing-extensions"]
-media = ["bokeh", "moviepy", "numpy", "pillow", "plotly (>=5.18.0)", "rdkit-pypi", "soundfile"]
+launch = ["awscli", "azure-containerregistry", "azure-identity", "azure-storage-blob", "boto3", "botocore (>=1.5.76)", "chardet", "google-auth", "google-cloud-aiplatform", "google-cloud-artifact-registry", "google-cloud-compute", "google-cloud-storage", "iso8601", "jsonschema", "kubernetes", "kubernetes-asyncio", "nbconvert", "nbformat", "optuna", "pydantic", "pyyaml (>=6.0.0)", "tomli", "typing-extensions"]
+media = ["bokeh", "imageio", "moviepy", "numpy", "pillow", "plotly (>=5.18.0)", "rdkit", "soundfile"]
 models = ["cloudpickle"]
 perf = ["orjson"]
 sweeps = ["sweeps (>=0.2.0)"]
@@ -8738,4 +8743,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "3.10.*"
-content-hash = "74097098977e64a7a12b4102b5a7c587b5b0f22a2c1e76a8598a12c5ca48f258"
+content-hash = "1a9e8601ab32dab12e94efe209e9a91bc3d087d356785aa70f5aa11715c093f9"

@@ -118,4 +118,3 @@ class GenerateExamplesCallback(TrainerCallback):
                 wandb.log({f"eval/generated_text_{state.global_step}": wandb.Table(dataframe=combined_df)})
 
             pretty_print_dataframe(combined_df.sample(3))
-
