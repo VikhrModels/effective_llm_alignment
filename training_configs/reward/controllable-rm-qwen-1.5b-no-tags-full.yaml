@@ -28,6 +28,9 @@ bf16: True
 fp16: False
 seed: 42
 logging_first_step: True
+unfreeze_layers_patterns:
+  - "score"
+  - "*.layers.*"
 use_peft: False
 lora_task_type: SEQ_CLS
 lora_target_modules:

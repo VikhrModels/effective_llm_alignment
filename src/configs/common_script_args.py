@@ -43,3 +43,7 @@ class CommonScriptArguments:
         default=None,
         metadata={"help": "Additional special tokens"}
     )
+    unfreeze_layers_patterns: List[str] | None = field(
+        default=None,
+        metadata={"help": "Patterns of layer names needed to be unfreeze for learning"}
+    )

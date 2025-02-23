@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 import random
 import uuid
@@ -7,7 +8,7 @@ from dataclasses import dataclass
 import torch
 from accelerate import PartialState
 from accelerate.logging import get_logger
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, set_seed
 from trl import RewardTrainer, RewardConfig, ModelConfig, get_peft_config
 
 from src.utils.logger import setup_logging
@@ -25,6 +26,8 @@ os.environ['WANDB_RUN_ID'] = str(random.randint(100000, 999999))
 os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
 os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
+DATASET_PROCESSING_THREADS = multiprocessing.cpu_count() // 2
+
 
 @dataclass
 class RMScriptArguments(CommonScriptArguments):
@@ -37,6 +40,7 @@ def main():
     args, reward_config, model_config = parser.parse()
 
     setup_logging(logger, reward_config)
+    set_seed(reward_config.seed)  # in case of new tokens added without initialize...
 
     os.environ["WANDB_PROJECT"] = args.project_name
     os.environ['CLEARML_PROJECT'] = args.project_name
@@ -47,9 +51,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     model = AutoModelForSequenceClassification.from_pretrained(
         model_config.model_name_or_path,
-        # device_map="auto",
         torch_dtype=torch.bfloat16 if reward_config.bf16 else torch.float16,
-        # max_position_embeddings=sft_config.max_seq_length,
         attn_implementation=model_config.attn_implementation,
         num_labels=1
     )
@@ -64,9 +66,14 @@ def main():
                 "You are using a `task_type` that is different than `SEQ_CLS` for PEFT. This will lead to silent bugs"
                 " Make sure to pass --lora_task_type SEQ_CLS when using this script."
             )
+        if args.unfreeze_layers_patterns:
+            warnings.warn(
+                "You can't use non-empty unfreeze_layers_patterns and peft together at this time, only peft config will be used"
+            )
         peft_config = get_peft_config(model_config)
     else:
-        unfreeze_modules_by_patterns(model, ['score', '*.layers.*'])
+        if args.unfreeze_layers_patterns:
+            unfreeze_modules_by_patterns(model, args.unfreeze_layers_patterns)
         peft_config = None
 
     if PartialState().is_main_process:
@@ -101,13 +108,14 @@ def main():
         return new_examples
 
     # Preprocess the dataset and filter out examples that are longer than args.max_length
-    ds = ds.map(
-        preprocess_function,
-        batched=True,
-        num_proc=8,
-        keep_in_memory=True,
-        load_from_cache_file=False
-    )
+    with PartialState().local_main_process_first():
+        ds = ds.map(
+            preprocess_function,
+            batched=True,
+            num_proc=DATASET_PROCESSING_THREADS,
+            keep_in_memory=True,
+            load_from_cache_file=True
+        )
     train_dataset = ds["train"]
     eval_dataset = ds["test"]
 

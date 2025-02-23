@@ -17,7 +17,7 @@ from src.collators.completions_only import DataCollatorForCompletionOnlyLM
 from src.configs.common_script_args import CommonScriptArguments
 from src.utils.datasets import load_datasets
 from src.utils.logger import setup_logging
-from src.utils.model_preparation import setup_model_and_tokenizer
+from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
 from src.utils.yaml_args_parser import H4ArgumentParser
 
 logger = get_logger(__name__)
@@ -27,6 +27,8 @@ LOGGING_TASK_NAME = str(uuid.uuid4())
 os.environ['WANDB_RUN_ID'] = str(random.randint(100000, 999999))
 os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
 os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
+
+DATASET_PROCESSING_THREADS = multiprocessing.cpu_count() // 2
 
 
 @dataclass
@@ -91,40 +93,47 @@ def main():
             swiglu=True,
             cross_entropy=False,
             fused_linear_cross_entropy=True,
-            rms_norm=False
+            rms_norm=True
         )
         apply_liger_kernel_to_mistral(
             rope=False,
             swiglu=True,
             cross_entropy=False,
             fused_linear_cross_entropy=True,
-            rms_norm=False
+            rms_norm=True
         )
         apply_liger_kernel_to_qwen2(
             rope=False,
             swiglu=True,
             cross_entropy=False,
             fused_linear_cross_entropy=True,
-            rms_norm=False
-        )
-
-    for n, p in model.named_parameters():
-        p.requires_grad = not model_config.use_peft
-
-    # TODO: Remake get_peft_config() to allow PromptLearning, Vera, etc...
-    peft_config = get_peft_config(model_config)
-
-    if model_config.lora_task_type != "CAUSAL_LM":
-        warnings.warn(
-            "You are using a `task_type` that is different than `CAUSAL_LM` for PEFT. This will lead to silent bugs"
-            " Make sure to pass --lora_task_type CAUSAL_LM when using this script."
+            rms_norm=True
         )
 
     setup_model_and_tokenizer(args, model, tokenizer, sft_config.max_seq_length)
 
+    if model_config.use_peft:
+        for n, p in model.named_parameters():
+            p.requires_grad = False
+        if model_config.lora_task_type != "CAUSAL_LM":
+            warnings.warn(
+                "You are using a `task_type` that is different than `CAUSAL_LM` for PEFT. This will lead to silent bugs"
+                " Make sure to pass --lora_task_type CAUSAL_LM when using this script."
+            )
+        if args.unfreeze_layers_patterns:
+            warnings.warn(
+                "You can't use non-empty unfreeze_layers_patterns and peft together at this time, only peft config will be used"
+            )
+        peft_config = get_peft_config(model_config)
+    else:
+        if args.unfreeze_layers_patterns:
+            unfreeze_modules_by_patterns(model, args.unfreeze_layers_patterns)
+        peft_config = None
+
     if PartialState().is_main_process:
-        print(f'Tokenizer: {tokenizer}')
-        print(f'Model config: {model.config}')
+        logger.info(f'Tokenizer: {tokenizer}')
+        logger.info(f'Model config: {model.config}')
+        logger.info(f'Model: {model}')
 
     ################
     # Dataset
@@ -159,13 +168,15 @@ def main():
     with PartialState().local_main_process_first():
         ds = ds.map(
             process_row,
-            num_proc=multiprocessing.cpu_count(),
+            num_proc=DATASET_PROCESSING_THREADS,
+            keep_in_memory=True,
             load_from_cache_file=True,
             remove_columns=extra_columns
         )
         generate_dataset = generate_dataset.map(
             lambda row: process_row(row, add_gen_prompt=True),
-            num_proc=multiprocessing.cpu_count(),
+            num_proc=DATASET_PROCESSING_THREADS,
+            keep_in_memory=True,
             load_from_cache_file=True,
             remove_columns=extra_columns
         )
@@ -174,12 +185,12 @@ def main():
     eval_dataset = ds["test"]
 
     if PartialState().is_main_process:
-        print('Example from train dataset:')
-        print(train_dataset[0])
-        print('Example from test dataset:')
-        print(eval_dataset[0])
-        print('Example from gen dataset:')
-        print(generate_dataset[0])
+        logger.info('Example from train dataset:')
+        logger.info(train_dataset[0])
+        logger.info('Example from test dataset:')
+        logger.info(eval_dataset[0])
+        logger.info('Example from gen dataset:')
+        logger.info(generate_dataset[0])
 
     collator = DataCollatorForCompletionOnlyLM(
         response_prompt_template=args.assistant_message_template,
