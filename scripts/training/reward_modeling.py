@@ -142,6 +142,10 @@ def main():
 
     # train and save the model
     trainer.train()
+
+    if trainer.is_fsdp_enabled:
+        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+
     trainer.save_model(reward_config.output_dir)
 
 

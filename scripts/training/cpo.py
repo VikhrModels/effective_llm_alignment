@@ -11,7 +11,7 @@ from accelerate import PartialState
 from accelerate.logging import get_logger
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.integrations import is_deepspeed_zero3_enabled
-from trl import ModelConfig, get_peft_config, DPOConfig, DPOTrainer
+from trl import ModelConfig, get_peft_config, CPOConfig, CPOTrainer
 
 from src.callbacks.generate_examples import GenerateExamplesCallback
 from src.configs.common_script_args import CommonScriptArguments
@@ -30,7 +30,7 @@ os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
 
 @dataclass
-class DPOScriptArguments(CommonScriptArguments):
+class CPOScriptArguments(CommonScriptArguments):
     generate_eval_examples: bool | None = field(
         default=True,
         metadata={"help": "Do generate examples on eval"}
@@ -41,14 +41,14 @@ class DPOScriptArguments(CommonScriptArguments):
     )
 
     def __post_init__(self):
-        self.project_name = "dpo-tuning" if self.project_name == "default-project" else self.project_name
+        self.project_name = "cpo-tuning" if self.project_name == "default-project" else self.project_name
 
 
 def main():
-    parser = H4ArgumentParser((DPOScriptArguments, DPOConfig, ModelConfig))
-    args, dpo_config, model_config = parser.parse()
+    parser = H4ArgumentParser((CPOScriptArguments, CPOConfig, ModelConfig))
+    args, cpo_config, model_config = parser.parse()
 
-    setup_logging(logger, dpo_config)
+    setup_logging(logger, cpo_config)
 
     os.environ["WANDB_PROJECT"] = args.project_name
     os.environ['CLEARML_PROJECT'] = args.project_name
@@ -59,7 +59,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_config.model_name_or_path,
-        torch_dtype=torch.bfloat16 if dpo_config.bf16 else torch.float16,
+        torch_dtype=torch.bfloat16 if cpo_config.bf16 else torch.float16,
+        # max_position_embeddings=sft_config.max_seq_length,
         attn_implementation=model_config.attn_implementation
     )
 
@@ -67,14 +68,6 @@ def main():
         p.requires_grad = not model_config.use_peft
 
     peft_config = get_peft_config(model_config)
-    if peft_config is None:
-        model_ref = AutoModelForCausalLM.from_pretrained(
-            model_config.model_name_or_path,
-            torch_dtype=torch.bfloat16 if dpo_config.bf16 else torch.float16,
-            attn_implementation=model_config.attn_implementation
-        )
-    else:
-        model_ref = None
 
     if model_config.lora_task_type != "CAUSAL_LM":
         warnings.warn(
@@ -83,8 +76,6 @@ def main():
         )
 
     setup_model_and_tokenizer(args, model, tokenizer)
-    if model_ref:
-        setup_model_and_tokenizer(args, model_ref, tokenizer)
 
     if PartialState().is_main_process:
         print(f'Tokenizer: {tokenizer}')
@@ -93,7 +84,7 @@ def main():
     ################
     # Dataset
     ################
-    ds = load_datasets(args.dataset, args.test_size, args.dataset_ratio)
+    ds = load_datasets(args.dataset, args.test_size)
     generate_dataset = ds['test']
 
     def apply_chat_templates(row):
@@ -109,7 +100,7 @@ def main():
             load_from_cache_file=True,
         )
         generate_dataset = generate_dataset.map(
-            partial(prepare_generative_row, tokenizer=tokenizer, max_length=dpo_config.max_prompt_length),
+            partial(prepare_generative_row, tokenizer=tokenizer, max_length=cpo_config.max_prompt_length),
             num_proc=multiprocessing.cpu_count(),
             load_from_cache_file=True
         )
@@ -130,7 +121,7 @@ def main():
         tokenizer=tokenizer,
         num_examples=args.num_gen_examples,
         is_deepspeed_zero3=is_deepspeed_zero3_enabled(),
-        logger_backend=dpo_config.report_to[0]
+        logger_backend=cpo_config.report_to[0]
     )
 
     PartialState().wait_for_everyone()
@@ -138,10 +129,9 @@ def main():
     ################
     # Training
     ################
-    trainer = DPOTrainer(
+    trainer = CPOTrainer(
         model,
-        args=dpo_config,
-        ref_model=model_ref,
+        args=cpo_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
@@ -151,7 +141,11 @@ def main():
 
     # train and save the model
     trainer.train()
-    trainer.save_model(dpo_config.output_dir)
+
+    if trainer.is_fsdp_enabled:
+        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+
+    trainer.save_model(cpo_config.output_dir)
 
 
 if __name__ == '__main__':

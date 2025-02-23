@@ -26,6 +26,7 @@ from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_pt_utils import nested_detach
 from transformers.trainer_utils import EvalPrediction
 from transformers.utils import is_peft_available
+from transformers.utils.deprecation import deprecate_kwarg
 from trl.trainer import disable_dropout_in_model
 from trl.trainer.utils import decode_and_strip_padding, print_rich_table
 
@@ -55,6 +56,9 @@ def _tokenize(batch: dict[str, list[Any]], tokenizer: "PreTrainedTokenizerBase")
 class ClassificationTrainer(Trainer):
     _tag_names = ["classification-trainer"]
 
+    @deprecate_kwarg(
+        "tokenizer", "0.15.0", "processing_class", warn_if_greater_or_equal_version=True, raise_if_both_names=True
+    )
     def __init__(
         self,
         model: Optional[Union[PreTrainedModel, nn.Module]] = None,
@@ -73,7 +77,9 @@ class ClassificationTrainer(Trainer):
             None,
         ),
         preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+        max_length: Optional[int] = None,
         peft_config: Optional[dict] = None,
+        is_binary: Optional[bool] = True,
     ):
         if not is_peft_available() and peft_config is not None:
             raise ValueError(
@@ -111,12 +117,13 @@ class ClassificationTrainer(Trainer):
         if data_collator is None:
             if processing_class is None:
                 raise ValueError(
-                    "A processing_class must be specified when using the default ClassificationDataCollatorWithPadding"
+                    "A processing_class must be specified when using the default DataCollatorWithPadding"
                 )
 
-            max_length = args.max_length
+            if max_length is None:
+                max_length = 512 if args.max_length is None else args.max_length
 
-            data_collator = DataCollatorWithPadding(processing_class)
+            data_collator = DataCollatorWithPadding(processing_class, max_length=max_length)
 
             if args.remove_unused_columns:
                 try:  # for bc before https://github.com/huggingface/transformers/pull/25435
@@ -125,7 +132,7 @@ class ClassificationTrainer(Trainer):
                     args = replace(args, remove_unused_columns=False)
                 # warn users
                 warnings.warn(
-                    "When using ClassificationDataCollatorWithPadding, you should set `remove_unused_columns=False` in your ClassificationConfig"
+                    "When using DataCollatorWithPadding, you should set `remove_unused_columns=False` in your ClassificationConfig"
                     " we have set it for you, but you should do it yourself in the future.",
                     UserWarning,
                 )
@@ -149,6 +156,8 @@ class ClassificationTrainer(Trainer):
                         num_proc=args.dataset_num_proc,
                     )
 
+        self.is_binary = is_binary
+
         super().__init__(
             model=model,
             args=args,
@@ -168,12 +177,13 @@ class ClassificationTrainer(Trainer):
             self.model.add_model_tags(self._tag_names)
 
     def _default_compute_metrics(self, eval_pred: EvalPrediction) -> dict:
+        average = 'binary' if self.is_binary else 'weighted'
         logits, labels = eval_pred
         preds = logits.argmax(axis=-1)
         accuracy = accuracy_score(labels, preds)
-        precision = precision_score(labels, preds, average='weighted')
-        recall = recall_score(labels, preds, average='weighted')
-        f1 = f1_score(labels, preds, average='weighted')
+        precision = precision_score(labels, preds, average=average)
+        recall = recall_score(labels, preds, average=average)
+        f1 = f1_score(labels, preds, average=average)
         return {
             "accuracy": accuracy,
             "precision": precision,
