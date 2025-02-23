@@ -1,0 +1,20 @@
+models:
+  - model: Vikhrmodels/Phikhr-14B-Instruct-R-19-12-24-SFT
+    parameters:
+      weight: 0.5
+  - model: Vikhrmodels/Phikhr-14B-Instruct-R-25-12-24-SMPO-v9.1
+    parameters:
+      weight: 0.8
+  - model: Vikhrmodels/Phikhr-14B-Instruct-R-25-12-24-SMPO-v7
+    parameters:
+      weight: 1.0
+
+merge_method: della_linear
+base_model: NyxKrage/Microsoft_Phi-4
+parameters:
+  epsilon: 0.05
+  lambda: 1
+  density: 0.6
+  normalize: true
+dtype: float16
+tokenizer_source: Vikhrmodels/Phikhr-14B-Instruct-R-19-12-24-SFT
