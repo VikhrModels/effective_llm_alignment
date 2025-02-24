@@ -1,8 +1,9 @@
 model_name_or_path: "Qwen/Qwen2.5-1.5B-Instruct"
-dataset: "Vikhrmodels/controllable_rm_dataset_no_tags"
-per_device_train_batch_size: 2
+dataset: "Vikhrmodels/controllable_clf_dataset_no_tags"
+per_device_train_batch_size: 4
 per_device_eval_batch_size: 6
 num_train_epochs: 1
+num_labels: 2
 save_strategy: "steps"
 evaluation_strategy: "steps"
 save_steps: 125
@@ -13,7 +14,6 @@ learning_rate: 0.00003
 weight_decay: 0.05
 lr_scheduler_type: "cosine"
 warmup_ratio: 0.05
-center_rewards_coefficient: 0.01
 gradient_accumulation_steps: 16
 gradient_checkpointing: True
 logging_steps: 1
@@ -22,8 +22,8 @@ dataloader_num_workers: 2
 max_length: 16384
 attn_implementation: "sdpa"
 torch_compile: False
-run_name: "controllable-rm-qwen-1.5b-no-tags-full-no-emb"
-output_dir: "checkpoints/controllable-rm-qwen-1.5b-no-tags-full-no-emb"
+run_name: "controllable-clf-qwen-1.5b-no-tags-full-no-emb"
+output_dir: "checkpoints/controllable-clf-qwen-1.5b-no-tags-full-no-emb"
 report_to: "wandb"
 bf16: True
 fp16: False

@@ -29,7 +29,7 @@ os.environ['WANDB_RUN_ID'] = str(random.randint(100000, 999999))
 os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
 os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
-DATASET_PROCESSING_THREADS = multiprocessing.cpu_count() // 2
+DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
 
 
 @dataclass
@@ -148,6 +148,8 @@ def main():
         )
     model.config.label2id = label_to_id
     model.config.id2label = {id: label for label, id in label_to_id.items()}
+
+    logger.info(f'Label2id Mapping: {str(label_to_id)}')
 
     def multi_labels_to_ids(labels: List[str]) -> List[float]:
         ids = [0.0] * len(label_to_id)  # BCELoss requires float as target type

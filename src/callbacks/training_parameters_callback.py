@@ -30,20 +30,11 @@ def normalize_module_name(module_name):
     return normalized
 
 def compute_module_trainable_stats(model):
-    """
-    For each submodule (using parameters(recurse=False)), calculates the number of parameters
-    and the number of trainable parameters. Returns a dictionary of the form:
-      { normalized_module_name: (total_params, trainable_params) }
-    If multiple modules normalize to the same key, their values are summed.
-    """
     stats = {}
-    for module_name, module in model.named_modules():
-        params = list(module.parameters(recurse=False))
-        if not params:
-            continue
-        total = sum(p.numel() for p in params)
-        trainable = sum(p.numel() for p in params if p.requires_grad)
-        norm_name = normalize_module_name(module_name)
+    for param_name, param in model.named_parameters():
+        total = param.numel()
+        trainable = param.numel() if param.requires_grad else 0
+        norm_name = normalize_module_name(param_name)
         if norm_name in stats:
             prev_total, prev_trainable = stats[norm_name]
             stats[norm_name] = (prev_total + total, prev_trainable + trainable)

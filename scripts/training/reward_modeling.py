@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import sys
 import random
 import uuid
 import warnings
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 import torch
 from accelerate import PartialState
 from accelerate.logging import get_logger
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, set_seed
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, set_seed, HfArgumentParser
 from trl import RewardTrainer, RewardConfig, ModelConfig, get_peft_config
 
 from src.utils.logger import setup_logging
@@ -26,7 +27,7 @@ os.environ['WANDB_RUN_ID'] = str(random.randint(100000, 999999))
 os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
 os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
-DATASET_PROCESSING_THREADS = multiprocessing.cpu_count() // 2
+DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
 
 
 @dataclass
@@ -36,8 +37,8 @@ class RMScriptArguments(CommonScriptArguments):
 
 
 def main():
-    parser = H4ArgumentParser((RMScriptArguments, RewardConfig, ModelConfig))
-    args, reward_config, model_config = parser.parse()
+    parser = HfArgumentParser((RMScriptArguments, RewardConfig, ModelConfig))
+    args, reward_config, model_config = parser.parse_yaml_file(os.path.abspath(sys.argv[1]))
 
     setup_logging(logger, reward_config)
     set_seed(reward_config.seed)  # in case of new tokens added without initialize...
@@ -150,4 +151,5 @@ def main():
 
 
 if __name__ == '__main__':
+    assert len(sys.argv) >= 2 and sys.argv[1].endswith(".yaml"), "You must provide .yaml file with training config as argument"
     main()

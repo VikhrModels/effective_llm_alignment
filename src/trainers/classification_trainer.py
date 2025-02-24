@@ -125,18 +125,6 @@ class ClassificationTrainer(Trainer):
 
             data_collator = DataCollatorWithPadding(processing_class, max_length=max_length)
 
-            if args.remove_unused_columns:
-                try:  # for bc before https://github.com/huggingface/transformers/pull/25435
-                    args.remove_unused_columns = False
-                except FrozenInstanceError:
-                    args = replace(args, remove_unused_columns=False)
-                # warn users
-                warnings.warn(
-                    "When using DataCollatorWithPadding, you should set `remove_unused_columns=False` in your ClassificationConfig"
-                    " we have set it for you, but you should do it yourself in the future.",
-                    UserWarning,
-                )
-
             self.use_classification_data_collator = True
         else:
             self.use_classification_data_collator = False
@@ -196,6 +184,7 @@ class ClassificationTrainer(Trainer):
         model: Union[PreTrainedModel, nn.Module],
         inputs: dict[str, Union[torch.Tensor, Any]],
         return_outputs=False,
+        num_items_in_batch=None,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, dict[str, torch.Tensor]]]:
         outputs = model(
             input_ids=inputs["input_ids"],
