@@ -1,12 +1,14 @@
 import re
-import torch
+
 from accelerate import PartialState
-import transformers
-from transformers import TrainerControl, TrainingArguments, TrainerState, TrainerCallback
+from accelerate.utils import gather_object
+from transformers import (
+    TrainerCallback,
+)
 from transformers.utils import logging
 
-
 logger = logging.get_logger(__name__)
+
 
 def count_model_parameters(model):
     """
@@ -18,6 +20,7 @@ def count_model_parameters(model):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total_params, trainable_params
 
+
 def normalize_module_name(module_name):
     """
     Converts the module name into a normalized (grouping) form,
@@ -26,8 +29,9 @@ def normalize_module_name(module_name):
     """
     if not module_name:
         return "<root>"
-    normalized = re.sub(r'\b\d+\b', 'X', module_name)
+    normalized = re.sub(r"\b\d+\b", "X", module_name)
     return normalized
+
 
 def compute_module_trainable_stats(model):
     stats = {}
@@ -42,6 +46,7 @@ def compute_module_trainable_stats(model):
             stats[norm_name] = (total, trainable)
     return stats
 
+
 class ParameterStatsCallback(TrainerCallback):
     """
     Callback for Trainer that logs the following before training begins:
@@ -49,10 +54,8 @@ class ParameterStatsCallback(TrainerCallback):
       - Number of trainable parameters and the percentage of trainable parameters
       - List of "deduplicated" modules with the percentage of trainable parameters per group
     """
+
     def on_train_begin(self, args, state, control, **kwargs):
-        if not PartialState().is_main_process:
-            return
-        
         model = kwargs.get("model", None)
         if model is None:
             trainer = kwargs.get("trainer", None)
@@ -62,23 +65,36 @@ class ParameterStatsCallback(TrainerCallback):
         total_params, trainable_params = count_model_parameters(model)
         percent = 100 * trainable_params / total_params if total_params > 0 else 0
 
-        print("\n===== Model view inside Trainer =====")
+        print(
+            f"\n===== Model view inside Trainer (process: {PartialState().process_index}) ====="
+        )
         print(model)
 
-        print("\n===== Model parameter statistics =====")
-        print(f"Total number of parameters      : {total_params:,}")
-        print(f"Number of trainable parameters  : {trainable_params:,}")
-        print(f"Percentage of trainable parameters: {percent:.2f}%\n")
+        if PartialState().is_main_process:
+            print("\n===== Model parameter statistics =====")
+            print(f"Total number of parameters      : {total_params:,}")
+            print(f"Number of trainable parameters  : {trainable_params:,}")
+            print(f"Percentage of trainable parameters: {percent:.2f}%\n")
 
         module_stats = compute_module_trainable_stats(model)
+        module_stats = gather_object(module_stats)
         module_stats_percent = []
         for mod_name, (mod_total, mod_trainable) in module_stats.items():
             mod_percent = 100 * mod_trainable / mod_total if mod_total > 0 else 0
-            module_stats_percent.append((mod_name, mod_total, mod_trainable, mod_percent))
+            module_stats_percent.append(
+                (mod_name, mod_total, mod_trainable, mod_percent)
+            )
 
         module_stats_percent.sort(key=lambda x: x[3], reverse=True)
 
-        print("List of module groups (normalized names), sorted by percentage of trainable parameters:")
+        if not PartialState().is_main_process:
+            return
+
+        print(
+            "List of module groups (normalized names), sorted by percentage of trainable parameters:"
+        )
         for mod_name, mod_total, mod_trainable, mod_percent in module_stats_percent:
-            print(f"  {mod_name:30s} - trainable: {mod_trainable:,} / {mod_total:,} ({mod_percent:.2f}%)")
+            print(
+                f"  {mod_name:30s} - trainable: {mod_trainable:,} / {mod_total:,} ({mod_percent:.2f}%)"
+            )
         print("========================================\n")

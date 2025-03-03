@@ -52,7 +52,7 @@ class SimpleMarginPOConfig(TrainingArguments):
         dataset_num_proc (`Optional[int]`, *optional*):
             The number of workers to use to tokenize the data. Defaults to None.
     """
-    
+
     max_length: Optional[int] = None
     max_prompt_length: Optional[int] = None
     max_completion_length: Optional[int] = None
@@ -65,8 +65,10 @@ class SimpleMarginPOConfig(TrainingArguments):
     lower_clip_percentile: Optional[float] = 0.02
     upper_clip_percentile: Optional[float] = None
     min_log_prob: Optional[float] = -2.3
-    
-    loss_type: Literal['sigmoid', 'hinge', 'ipo', 'smooth_lower_bound', 'smooth_double_bound'] = "smooth_lower_bound"
+
+    loss_type: Literal[
+        "sigmoid", "hinge", "ipo", "smooth_lower_bound", "smooth_double_bound"
+    ] = "smooth_lower_bound"
     disable_dropout: bool = True
 
     label_pad_token_id: int = -100
@@ -78,4 +80,3 @@ class SimpleMarginPOConfig(TrainingArguments):
     model_init_kwargs: Optional[Dict] = None
 
     dataset_num_proc: Optional[int] = None
-

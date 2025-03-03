@@ -38,6 +38,7 @@ bitsandbytes = "^0.45.2"
 galore-torch = "^1.0"
 apollo-torch = "^1.0.3"
 torchao = "^0.8.0"
+ruff = "^0.9.9"
 
 
 [build-system]

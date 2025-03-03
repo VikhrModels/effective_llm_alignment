@@ -20,7 +20,8 @@ from transformers import (
     PreTrainedTokenizerBase,
     ProcessorMixin,
     Trainer,
-    is_wandb_available, DataCollatorWithPadding,
+    is_wandb_available,
+    DataCollatorWithPadding,
 )
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_pt_utils import nested_detach
@@ -38,7 +39,10 @@ if is_peft_available():
 if is_wandb_available():
     import wandb
 
-def _tokenize(batch: dict[str, list[Any]], tokenizer: "PreTrainedTokenizerBase") -> dict[str, list[Any]]:
+
+def _tokenize(
+    batch: dict[str, list[Any]], tokenizer: "PreTrainedTokenizerBase"
+) -> dict[str, list[Any]]:
     """Tokenize a batch from a classification dataset."""
     new_examples = {
         "input_ids": [],
@@ -53,11 +57,16 @@ def _tokenize(batch: dict[str, list[Any]], tokenizer: "PreTrainedTokenizerBase")
 
     return new_examples
 
+
 class ClassificationTrainer(Trainer):
     _tag_names = ["classification-trainer"]
 
     @deprecate_kwarg(
-        "tokenizer", "0.15.0", "processing_class", warn_if_greater_or_equal_version=True, raise_if_both_names=True
+        "tokenizer",
+        "0.15.0",
+        "processing_class",
+        warn_if_greater_or_equal_version=True,
+        raise_if_both_names=True,
     )
     def __init__(
         self,
@@ -67,7 +76,12 @@ class ClassificationTrainer(Trainer):
         train_dataset: Optional[Dataset] = None,
         eval_dataset: Optional[Union[Dataset, dict[str, Dataset]]] = None,
         processing_class: Optional[
-            Union[PreTrainedTokenizerBase, BaseImageProcessor, FeatureExtractionMixin, ProcessorMixin]
+            Union[
+                PreTrainedTokenizerBase,
+                BaseImageProcessor,
+                FeatureExtractionMixin,
+                ProcessorMixin,
+            ]
         ] = None,
         model_init: Optional[Callable[[], PreTrainedModel]] = None,
         compute_metrics: Optional[Callable[[EvalPrediction], dict]] = None,
@@ -76,7 +90,9 @@ class ClassificationTrainer(Trainer):
             None,
             None,
         ),
-        preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+        preprocess_logits_for_metrics: Optional[
+            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        ] = None,
         max_length: Optional[int] = None,
         peft_config: Optional[dict] = None,
         is_binary: Optional[bool] = True,
@@ -87,23 +103,37 @@ class ClassificationTrainer(Trainer):
             )
         elif is_peft_available() and peft_config is not None:
             if not isinstance(model, PeftModel):
-                if getattr(model, "is_loaded_in_8bit", False) or getattr(model, "is_quantized", False):
+                if getattr(model, "is_loaded_in_8bit", False) or getattr(
+                    model, "is_quantized", False
+                ):
                     _supports_gc_kwargs = "gradient_checkpointing_kwargs" in list(
                         inspect.signature(prepare_model_for_kbit_training).parameters
                     )
 
-                    prepare_model_kwargs = {"use_gradient_checkpointing": args.gradient_checkpointing}
+                    prepare_model_kwargs = {
+                        "use_gradient_checkpointing": args.gradient_checkpointing
+                    }
 
-                    if not _supports_gc_kwargs and args.gradient_checkpointing_kwargs is not None:
+                    if (
+                        not _supports_gc_kwargs
+                        and args.gradient_checkpointing_kwargs is not None
+                    ):
                         warnings.warn(
                             "You passed `gradient_checkpointing_kwargs` in the trainer's kwargs, but your peft version does not support it. "
                             "please update to the latest version of peft to use `gradient_checkpointing_kwargs`.",
                             UserWarning,
                         )
-                    elif _supports_gc_kwargs and args.gradient_checkpointing_kwargs is not None:
-                        prepare_model_kwargs["gradient_checkpointing_kwargs"] = args.gradient_checkpointing_kwargs
+                    elif (
+                        _supports_gc_kwargs
+                        and args.gradient_checkpointing_kwargs is not None
+                    ):
+                        prepare_model_kwargs["gradient_checkpointing_kwargs"] = (
+                            args.gradient_checkpointing_kwargs
+                        )
 
-                    model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
+                    model = prepare_model_for_kbit_training(
+                        model, **prepare_model_kwargs
+                    )
 
                 model = get_peft_model(model, peft_config)
 
@@ -123,7 +153,9 @@ class ClassificationTrainer(Trainer):
             if max_length is None:
                 max_length = 512 if args.max_length is None else args.max_length
 
-            data_collator = DataCollatorWithPadding(processing_class, max_length=max_length)
+            data_collator = DataCollatorWithPadding(
+                processing_class, max_length=max_length
+            )
 
             self.use_classification_data_collator = True
         else:
@@ -132,13 +164,23 @@ class ClassificationTrainer(Trainer):
         if "input_ids" not in train_dataset.column_names:
             with PartialState().local_main_process_first():
                 fn_kwargs = {"tokenizer": processing_class}
-                train_dataset = train_dataset.map(_tokenize, batched=True, fn_kwargs=fn_kwargs, num_proc=args.dataset_num_proc)
+                train_dataset = train_dataset.map(
+                    _tokenize,
+                    batched=True,
+                    fn_kwargs=fn_kwargs,
+                    num_proc=args.dataset_num_proc,
+                )
                 train_dataset = train_dataset.filter(
                     lambda x: len(x["input_ids"]) <= max_length,
                     num_proc=args.dataset_num_proc,
                 )
                 if eval_dataset is not None:
-                    eval_dataset = eval_dataset.map(_tokenize, batched=True, fn_kwargs=fn_kwargs, num_proc=args.dataset_num_proc)
+                    eval_dataset = eval_dataset.map(
+                        _tokenize,
+                        batched=True,
+                        fn_kwargs=fn_kwargs,
+                        num_proc=args.dataset_num_proc,
+                    )
                     eval_dataset = eval_dataset.filter(
                         lambda x: len(x["input_ids"]) <= max_length,
                         num_proc=args.dataset_num_proc,
@@ -165,7 +207,7 @@ class ClassificationTrainer(Trainer):
             self.model.add_model_tags(self._tag_names)
 
     def _default_compute_metrics(self, eval_pred: EvalPrediction) -> dict:
-        average = 'binary' if self.is_binary else 'weighted'
+        average = "binary" if self.is_binary else "weighted"
         logits, labels = eval_pred
         preds = logits.argmax(axis=-1)
         accuracy = accuracy_score(labels, preds)
@@ -209,7 +251,9 @@ class ClassificationTrainer(Trainer):
         inputs = self._prepare_inputs(inputs)
         if ignore_keys is None:
             if hasattr(self.model, "config"):
-                ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])
+                ignore_keys = getattr(
+                    self.model.config, "keys_to_ignore_at_inference", []
+                )
             else:
                 ignore_keys = []
 
@@ -243,7 +287,9 @@ class ClassificationTrainer(Trainer):
         eval_dataloader = self.get_eval_dataloader()
         table = defaultdict(list)
         for _, inputs in enumerate(eval_dataloader):
-            _, logits, _ = self.prediction_step(self.model, inputs, prediction_loss_only=False)
+            _, logits, _ = self.prediction_step(
+                self.model, inputs, prediction_loss_only=False
+            )
             text = decode_and_strip_padding(inputs["input_ids"], self.processing_class)
             labels = inputs["labels"].tolist()
             preds = logits.argmax(dim=-1).tolist()
@@ -251,7 +297,12 @@ class ClassificationTrainer(Trainer):
             table["labels"].extend(gather_object(labels))
             table["preds"].extend(gather_object(preds))
             table["logits"].extend(
-                gather_object([[round(inner_item, 4) for inner_item in item] for item in logits.tolist()])
+                gather_object(
+                    [
+                        [round(inner_item, 4) for inner_item in item]
+                        for item in logits.tolist()
+                    ]
+                )
             )
             if num_print_samples >= 0 and len(table["text"]) >= num_print_samples:
                 break

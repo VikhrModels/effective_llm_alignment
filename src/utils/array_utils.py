@@ -40,15 +40,17 @@ def find_occurrences_v3(arr, subarr):
     m = len(subarr)
 
     # Выполняем свертку исходного массива с подмассивом
-    conv_result = np.convolve(arr, subarr[::-1], mode='valid')
+    conv_result = np.convolve(arr, subarr[::-1], mode="valid")
 
     # Вычисляем сумму элементов подмассива
     subarr_sum = np.sum(subarr)
 
     # Выполняем свертку исходного массива с вектором из единиц такой же длины, как подмассив
-    window_sum = np.convolve(arr, np.ones(m), mode='valid')
+    window_sum = np.convolve(arr, np.ones(m), mode="valid")
 
     # Индексы, где произведение совпадает
-    positions = np.where((conv_result == subarr_sum * window_sum) & (window_sum == subarr_sum))[0]
+    positions = np.where(
+        (conv_result == subarr_sum * window_sum) & (window_sum == subarr_sum)
+    )[0]
 
     return positions.tolist()
