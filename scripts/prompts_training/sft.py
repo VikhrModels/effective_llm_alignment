@@ -88,6 +88,7 @@ def main():
     def process_row(row, add_gen_prompt=False):
         system_message = [{'role': 'system', 'content': args.system_prompt}] if args.system_prompt else []
         history = row[args.conversation_field] if not add_gen_prompt else row[args.conversation_field][:-1]
+        history = [x for x in history if x['role'] != prompts_config.inserted_chat_role]  # needed only for prompts tuning
         if not args.model_support_system_role and history[0]["role"] == "system":
             if len(history) > 1 and history[1]["role"] == "user":
                 # add sys prompt to first user message

@@ -71,13 +71,13 @@ class ParameterStatsCallback(TrainerCallback):
         print(model)
 
         if PartialState().is_main_process:
-            print("\n===== Model parameter statistics =====")
             print(f"Total number of parameters      : {total_params:,}")
             print(f"Number of trainable parameters  : {trainable_params:,}")
             print(f"Percentage of trainable parameters: {percent:.2f}%\n")
 
+        print(f"\n===== Model parameter statistics (process: {PartialState().process_index}) =====")
+
         module_stats = compute_module_trainable_stats(model)
-        module_stats = gather_object(module_stats)
         module_stats_percent = []
         for mod_name, (mod_total, mod_trainable) in module_stats.items():
             mod_percent = 100 * mod_trainable / mod_total if mod_total > 0 else 0
@@ -87,11 +87,8 @@ class ParameterStatsCallback(TrainerCallback):
 
         module_stats_percent.sort(key=lambda x: x[3], reverse=True)
 
-        if not PartialState().is_main_process:
-            return
-
         print(
-            "List of module groups (normalized names), sorted by percentage of trainable parameters:"
+            f"List of module groups with normalized names:"
         )
         for mod_name, mod_total, mod_trainable, mod_percent in module_stats_percent:
             print(

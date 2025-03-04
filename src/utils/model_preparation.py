@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+from src.configs.additional.common_script_args import CommonScriptArguments
+
 try:
     import deepspeed
 except Exception as e:
@@ -9,8 +11,6 @@ import torch
 from accelerate import Accelerator
 from torch import nn
 from transformers import PreTrainedModel, PreTrainedTokenizer
-
-from src.configs.arguments.common_script_args import CommonScriptArguments
 
 
 def setup_model_and_tokenizer(

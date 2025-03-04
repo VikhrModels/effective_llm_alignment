@@ -53,6 +53,10 @@ def main():
 
     setup_model_and_tokenizer(args, model, tokenizer, reward_config.max_length)
 
+    # # Замораживаем основную модель
+    # for param in model.parameters():
+    #     param.requires_grad = False
+
     if PartialState().is_main_process:
         logger.info(f'Tokenizer: {tokenizer}')
         logger.info(f'Model config: {model.config}')
@@ -71,6 +75,7 @@ def main():
             "attention_mask_rejected": [],
         }
         for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+            prompt = [x for x in prompt if x['role'] != prompts_config.inserted_chat_role]  # needed only for prompts tuning
             chosen = tokenizer.apply_chat_template(prompt + chosen, tokenize=False, add_generation_prompt=False)
             rejected = tokenizer.apply_chat_template(prompt + rejected, tokenize=False, add_generation_prompt=False)
 
@@ -91,7 +96,7 @@ def main():
             batched=True,
             num_proc=DATASET_PROCESSING_THREADS,
             keep_in_memory=True,
-            load_from_cache_file=True
+            load_from_cache_file=False
         )
     train_dataset = ds["train"]
     eval_dataset = ds["test"]

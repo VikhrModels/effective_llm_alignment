@@ -40,6 +40,7 @@ class PromptsRewardTrainer(RewardTrainer):
             special_token_coef=prompt_args.special_token_coef,
             role=prompt_args.inserted_chat_role,
         )
+
         # Initialize the parent RewardTrainer with the tuned_model and other parameters
         super().__init__(model=tuned_model, args=args, tokenizer=tokenizer, **kwargs)
 
@@ -53,7 +54,7 @@ class PromptsRewardTrainer(RewardTrainer):
         for key, value in metrics.items():
             self._stored_metrics[train_eval][key].append(value)
 
-    def log(self, logs: Dict[str, float], **kwargs) -> None:
+    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """Log metrics, including stored ones."""
         # Determine if we're in train or eval mode
         train_eval = "train" if "loss" in logs else "eval"
@@ -66,7 +67,7 @@ class PromptsRewardTrainer(RewardTrainer):
         self._stored_metrics[train_eval].clear()
 
         # Call the original log method
-        super().log(logs, **kwargs)
+        super().log(logs, start_time)
 
     def compute_loss(
         self,
@@ -128,8 +129,8 @@ class PromptsRewardTrainer(RewardTrainer):
         self.store_metrics(metrics, train_eval=train_eval)
 
         if return_outputs:
-            rewards_chosen_avg = logits_chosen.mean(dim=0)
-            rewards_rejected_avg = logits_rejected.mean(dim=0)
+            rewards_chosen_avg = logits_chosen[0].unsqueeze(-1) # eval only first prompt
+            rewards_rejected_avg = logits_rejected[0].unsqueeze(-1)
             return total_loss, {
                 "rewards_chosen": rewards_chosen_avg,
                 "rewards_rejected": rewards_rejected_avg,
@@ -155,7 +156,7 @@ class PromptsRewardTrainer(RewardTrainer):
         # num_print_samples = kwargs.pop("num_print_samples", 4)
         # self.visualize_samples(num_print_samples)
         self.log_codebook_prompts()  # Log codebook prompts during evaluation
-        return super(Trainer).evaluate(*args, **kwargs)
+        return Trainer.evaluate(self, *args, **kwargs)
 
     def log_codebook_prompts(self):
         """Log current codebook prompts to console and logging services."""

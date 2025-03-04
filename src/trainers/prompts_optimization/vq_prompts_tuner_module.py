@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers import PreTrainedModel
+from transformers.modeling_utils import ModuleUtilsMixin
 
 
-class PromptCodebookTuner(nn.Module):
+class PromptCodebookTuner(PreTrainedModel):
+
     def __init__(
         self,
-        model,
+        model: PreTrainedModel,
         tokenizer,
         num_prompts,
         prompt_len,
@@ -15,7 +18,16 @@ class PromptCodebookTuner(nn.Module):
         special_token_coef=0.1,
         role="system",
     ):
-        super().__init__()
+        super().__init__(config=model.config)
+
+        # for compatibility with trainer
+        self.supports_gradient_checkpointing = model.supports_gradient_checkpointing
+        self._supports_sdpa = model._supports_sdpa
+        self._supports_flash_attn_2 = model._supports_flash_attn_2
+        self._supports_flex_attn = model._supports_flex_attn
+        self._is_hf_initialized = True
+        self._is_stateful = model._is_stateful
+        self.gradient_checkpointing = False
 
         self.model = model
         self.tokenizer = tokenizer
@@ -42,17 +54,17 @@ class PromptCodebookTuner(nn.Module):
         self.forbidden_token_ids = list(set(self.forbidden_token_ids))
 
         # Получаем эмбеддинги модели
-        self._embedding_layer = model.get_input_embeddings()
-        self.emb_dim = self._embedding_layer.embedding_dim
+        embedding_layer = model.get_input_embeddings()
+        self.emb_dim = embedding_layer.embedding_dim
 
         # Инициализация кодбука ближе к реальным эмбеддингам
-        init_emb = self._embedding_layer.weight.mean(dim=0)
+        init_emb = embedding_layer.weight.mean(dim=0)
         self.codebook = nn.Parameter(
-            torch.randn(num_prompts, prompt_len, self.emb_dim) * 0.1 + init_emb
+            torch.randn(num_prompts, prompt_len, self.emb_dim).to(dtype=init_emb.dtype, device=init_emb.device) * 0.1 + init_emb
         )
 
         # Регистрируем эмбеддинги словаря
-        self.register_buffer("vocab_embeddings", self._embedding_layer.weight.detach())
+        self.register_buffer("vocab_embeddings", embedding_layer.weight.detach())
 
     def _get_template_parts(self, role):
         """Получаем префикс и суффикс токены для указанной роли"""
@@ -99,7 +111,7 @@ class PromptCodebookTuner(nn.Module):
 
         # Находим ближайшие токены
         nearest_indices = distances.argmin(dim=-1)
-        quantized_embeddings = self._embedding_layer(nearest_indices)
+        quantized_embeddings = self.model.get_input_embeddings()(nearest_indices)
 
         # Straight-through estimator
         quantized_embeddings = (
@@ -137,10 +149,10 @@ class PromptCodebookTuner(nn.Module):
         prompt_embeddings, prompt_indices, probs = self._quantize_codebook()
         dissim_loss, special_penalty = self._calculate_aux_losses(probs)
 
-        prefix_emb = self._embedding_layer(
+        prefix_emb = self.model.get_input_embeddings()(
             self.prefix_tokens.to(prompt_embeddings.device)
         )
-        suffix_emb = self._embedding_layer(
+        suffix_emb = self.model.get_input_embeddings()(
             self.suffix_tokens.to(prompt_embeddings.device)
         )
 
@@ -159,7 +171,7 @@ class PromptCodebookTuner(nn.Module):
                 batch_size, -1, -1
             )
 
-            input_emb = self._embedding_layer(input_ids)
+            input_emb = self.model.get_input_embeddings()(input_ids)
 
             combined_emb = torch.cat([prompt_emb_batch, input_emb], dim=1)
 

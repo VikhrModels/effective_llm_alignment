@@ -53,7 +53,7 @@ class PromptsSFTTrainer(SFTTrainer):
         for key, value in metrics.items():
             self._stored_metrics[train_eval][key].append(value)
 
-    def log(self, logs: Dict[str, float], **kwargs) -> None:
+    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """Log metrics, including stored ones."""
         # Determine if we're in train or eval mode
         train_eval = "train" if "loss" in logs else "eval"
@@ -66,7 +66,7 @@ class PromptsSFTTrainer(SFTTrainer):
         self._stored_metrics[train_eval].clear()
 
         # Call the original log method
-        super().log(logs, **kwargs)
+        super().log(logs, start_time)
 
     def compute_loss(
         self,
@@ -122,7 +122,7 @@ class PromptsSFTTrainer(SFTTrainer):
         # num_print_samples = kwargs.pop("num_print_samples", 4)
         # self.visualize_samples(num_print_samples)
         self.log_codebook_prompts()  # Log codebook prompts during evaluation
-        return super(Trainer).evaluate(*args, **kwargs)
+        return Trainer.evaluate(self, *args, **kwargs)
 
     def log_codebook_prompts(self):
         """Log current codebook prompts to console and logging services."""
