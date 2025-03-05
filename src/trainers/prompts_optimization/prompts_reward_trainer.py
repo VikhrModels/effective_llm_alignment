@@ -39,6 +39,9 @@ class PromptsRewardTrainer(RewardTrainer):
             dissim_coef=prompt_args.dissim_coef,
             special_token_coef=prompt_args.special_token_coef,
             role=prompt_args.inserted_chat_role,
+            init_prompt=prompt_args.init_prompt,
+            fused_forward=prompt_args.fused_forward,
+            gumbel_temp=prompt_args.gumbel_temp,
         )
 
         # Initialize the parent RewardTrainer with the tuned_model and other parameters
@@ -121,6 +124,9 @@ class PromptsRewardTrainer(RewardTrainer):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
             metrics[f"accuracy_prompt_{i}"] = accuracy_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
+        metrics["logits_scale"] = (
+            self.accelerator.unwrap_model(model).logit_scale.data.clone().detach().cpu()
+        )
         metrics["mean_pairwise_loss"] = total_pairwise_loss.detach().cpu()
         metrics["mean_accuracy"] = accuracy_per_prompt.mean().detach().cpu()
 
@@ -129,7 +135,9 @@ class PromptsRewardTrainer(RewardTrainer):
         self.store_metrics(metrics, train_eval=train_eval)
 
         if return_outputs:
-            rewards_chosen_avg = logits_chosen[0].unsqueeze(-1) # eval only first prompt
+            rewards_chosen_avg = logits_chosen[0].unsqueeze(
+                -1
+            )  # eval only first prompt
             rewards_rejected_avg = logits_rejected[0].unsqueeze(-1)
             return total_loss, {
                 "rewards_chosen": rewards_chosen_avg,

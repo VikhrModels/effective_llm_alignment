@@ -75,7 +75,9 @@ class ParameterStatsCallback(TrainerCallback):
             print(f"Number of trainable parameters  : {trainable_params:,}")
             print(f"Percentage of trainable parameters: {percent:.2f}%\n")
 
-        print(f"\n===== Model parameter statistics (process: {PartialState().process_index}) =====")
+        print(
+            f"\n===== Model parameter statistics (process: {PartialState().process_index}) ====="
+        )
 
         module_stats = compute_module_trainable_stats(model)
         module_stats_percent = []
@@ -87,9 +89,7 @@ class ParameterStatsCallback(TrainerCallback):
 
         module_stats_percent.sort(key=lambda x: x[3], reverse=True)
 
-        print(
-            f"List of module groups with normalized names:"
-        )
+        print(f"List of module groups with normalized names:")
         for mod_name, mod_total, mod_trainable, mod_percent in module_stats_percent:
             print(
                 f"  {mod_name:30s} - trainable: {mod_trainable:,} / {mod_total:,} ({mod_percent:.2f}%)"

@@ -39,6 +39,9 @@ class PromptsSFTTrainer(SFTTrainer):
             dissim_coef=prompt_args.dissim_coef,
             special_token_coef=prompt_args.special_token_coef,
             role=prompt_args.inserted_chat_role,
+            init_prompt=prompt_args.init_prompt,
+            fused_forward=prompt_args.fused_forward,
+            gumbel_temp=prompt_args.gumbel_temp,
         )
         # Initialize the parent RewardTrainer with the tuned_model and other parameters
         super().__init__(model=tuned_model, args=args, tokenizer=tokenizer, **kwargs)
@@ -91,6 +94,9 @@ class PromptsSFTTrainer(SFTTrainer):
         for i in range(self.prompt_args.num_prompts):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
+        metrics["logits_scale"] = (
+            self.accelerator.unwrap_model(model).logit_scale.data.clone().detach().cpu()
+        )
         metrics["mean_sft_loss"] = total_sft_loss.detach().cpu()
 
         # Store metrics based on current phase

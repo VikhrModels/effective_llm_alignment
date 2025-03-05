@@ -22,6 +22,10 @@ class PromptsOptimizationConfig:
             "help": "Used in aux loss for penalty of using forbidden (special) tokens"
         },
     )
+    gumbel_temp: Optional[float] = field(
+        default=0.05,
+        metadata={"help": "Temperature for gumbel softmax trick"},
+    )
     forbidden_token_ids: Optional[List[int]] = field(
         default=None,
         metadata={"help": "List of ids of forbidden tokens in created prompts"},
@@ -29,4 +33,14 @@ class PromptsOptimizationConfig:
     inserted_chat_role: str = field(
         default="system",
         metadata={"help": "Chat role used for templating of created prompts insertion"},
+    )
+    fused_forward: bool = field(
+        default=True,
+        metadata={
+            "help": "Use full in-batch forward, instead of for loop, memory usage increase."
+        },
+    )
+    init_prompt: Optional[str] = field(
+        default=None,
+        metadata={"help": "Prompt to init optimization from"},
     )
