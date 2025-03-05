@@ -303,7 +303,7 @@ class PromptCodebookTuner(PreTrainedModel):
 
             # Переформатируем выходы
             logits = outputs.logits.view(
-                self.num_prompts, batch_size, -1, outputs.logits.size(-1)
+                self.num_prompts, batch_size, -1
             )
 
             # Вычисляем лоссы для каждого промпта

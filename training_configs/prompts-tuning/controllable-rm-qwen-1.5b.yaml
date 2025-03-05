@@ -1,19 +1,19 @@
 model_name_or_path: "Vikhrmodels/ControllableRM-Qwen2.5-1.5B"
 dataset: "Vikhrmodels/rm_training_dataset_16_12_24"
 test_size: 0.05
-per_device_train_batch_size: 4
+per_device_train_batch_size: 2
 per_device_eval_batch_size: 8
 num_train_epochs: 1
 save_strategy: "steps"
 evaluation_strategy: "steps"
-num_prompts: 2
+num_prompts: 3
 dissim_coef: 0.8
 gumbel_temp: 0.1
 prompt_len: 64
 fused_forward: True
 init_prompt: "The answer must be well structured, harmless, and answer the user's question correctly and completely."
 save_steps: 240
-eval_steps: 40
+eval_steps: 60
 save_only_model: True
 save_total_limit: 10
 learning_rate: 0.001
@@ -21,7 +21,7 @@ weight_decay: 0.01
 lr_scheduler_type: "linear"
 warmup_ratio: 0.01
 center_rewards_coefficient: 0.01
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 8
 gradient_checkpointing: True
 logging_steps: 1
 remove_unused_columns: False
@@ -29,8 +29,8 @@ dataloader_num_workers: 2
 max_length: 16384
 attn_implementation: "sdpa"
 torch_compile: False
-run_name: "controllable-rm-qwen-1.5b-prompts-optimization-np2-dc0.8-pl64-pi-gumbel0.1"
-output_dir: "checkpoints/controllable-rm-qwen-1.5b-prompts-optimization-np2-dc0.8-pl64-pi-gumbel0.1"
+run_name: "controllable-rm-qwen-1.5b-prompts-optimization-np3-dc0.8-pl64-pi-gumbel0.1"
+output_dir: "checkpoints/controllable-rm-qwen-1.5b-prompts-optimization-np3-dc0.8-pl64-pi-gumbel0.1"
 report_to: "wandb"
 bf16: True
 fp16: False
