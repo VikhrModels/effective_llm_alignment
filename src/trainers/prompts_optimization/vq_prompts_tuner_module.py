@@ -103,8 +103,8 @@ class PromptCodebookTuner(PreTrainedModel):
                 + init_emb
             )
 
-        self.logit_scale = nn.Parameter(
-            torch.tensor(10.0).to(
+        self.noise_scale = nn.Parameter(
+            torch.tensor(0.05).to(
                 dtype=embedding_layer.weight.dtype, device=embedding_layer.weight.device
             )
         )  # Initial scale factor
@@ -159,10 +159,9 @@ class PromptCodebookTuner(PreTrainedModel):
         vocab_norm = F.normalize(safe_vocab_emb, p=2, dim=-1)
 
         # Scaled cosine similarity
-        cos_sim = torch.matmul(
+        logits = torch.matmul(
             flat_codebook, safe_vocab_emb.T
         )  # [num_prompts * seq_len, vocab_size]
-        logits = cos_sim * self.logit_scale  # Learnable scaling
 
         # # Mask forbidden tokens
         # if self.forbidden_token_ids:
@@ -171,10 +170,8 @@ class PromptCodebookTuner(PreTrainedModel):
         # Gumbel-Softmax with adaptive temperature
         if training:
             gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10))
-            # logit_std = torch.std(logits.detach())
-            # noise_scale = torch.clamp(logit_std / 2.0, 0.1, 1.0)
-            # scaled_noise = gumbel_noise * noise_scale
-            noisy_logits = (logits + gumbel_noise) / self.gumbel_temp
+            scaled_noise = gumbel_noise * self.noise_scale
+            noisy_logits = (logits + scaled_noise) / self.gumbel_temp
             probs = F.softmax(noisy_logits, dim=-1)
         else:
             probs = F.one_hot(logits.argmax(dim=-1), logits.size(-1)).to(

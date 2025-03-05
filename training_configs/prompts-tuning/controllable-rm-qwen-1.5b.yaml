@@ -7,16 +7,16 @@ num_train_epochs: 1
 save_strategy: "steps"
 evaluation_strategy: "steps"
 num_prompts: 3
-dissim_coef: 0.8
-gumbel_temp: 0.1
+dissim_coef: 0.5
+gumbel_temp: 0.2
 prompt_len: 64
 fused_forward: True
 init_prompt: "The answer must be well structured, harmless, and answer the user's question correctly and completely."
-save_steps: 240
+save_steps: 360
 eval_steps: 60
 save_only_model: True
 save_total_limit: 10
-learning_rate: 0.001
+learning_rate: 0.002
 weight_decay: 0.01
 lr_scheduler_type: "linear"
 warmup_ratio: 0.01
@@ -29,8 +29,8 @@ dataloader_num_workers: 2
 max_length: 16384
 attn_implementation: "sdpa"
 torch_compile: False
-run_name: "controllable-rm-qwen-1.5b-prompts-optimization-np3-dc0.8-pl64-pi-gumbel0.1"
-output_dir: "checkpoints/controllable-rm-qwen-1.5b-prompts-optimization-np3-dc0.8-pl64-pi-gumbel0.1"
+run_name: "controllable-rm-qwen-1.5b-prompts-optimization-np3-dc0.5-pl64-pi-gumbel0.2"
+output_dir: "checkpoints/controllable-rm-qwen-1.5b-prompts-optimization-np3-dc0.5-pl64-pi-gumbel0.2"
 report_to: "wandb"
 bf16: True
 fp16: False

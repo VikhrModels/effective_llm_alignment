@@ -49,6 +49,8 @@ class PromptsSFTTrainer(SFTTrainer):
         # Initialize stored metrics
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
+        self.log_codebook_prompts(no_gumbel=False)
+
     def store_metrics(
         self, metrics: Dict[str, float], train_eval: Literal["train", "eval"] = "train"
     ) -> None:
@@ -94,8 +96,8 @@ class PromptsSFTTrainer(SFTTrainer):
         for i in range(self.prompt_args.num_prompts):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
-        metrics["logits_scale"] = (
-            self.accelerator.unwrap_model(model).logit_scale.data.clone().detach().cpu()
+        metrics["noise_scale"] = (
+            self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
         )
         metrics["mean_sft_loss"] = total_sft_loss.detach().cpu()
 
@@ -130,13 +132,13 @@ class PromptsSFTTrainer(SFTTrainer):
         self.log_codebook_prompts()  # Log codebook prompts during evaluation
         return Trainer.evaluate(self, *args, **kwargs)
 
-    def log_codebook_prompts(self):
+    def log_codebook_prompts(self, no_gumbel=True):
         """Log current codebook prompts to console and logging services."""
         if self.accelerator.process_index != 0:
             return  # Only log from main process
 
         # Retrieve current codebook prompts
-        prompts_info = self.model.get_codebook_tokens(return_strings=True)
+        prompts_info = self.model.get_codebook_tokens(return_strings=True, no_gumbel=no_gumbel)
         prompts = prompts_info["prompts"]
         tokens = prompts_info["tokens"]
 
@@ -146,7 +148,7 @@ class PromptsSFTTrainer(SFTTrainer):
         )
 
         # Print to console
-        print("\nCurrent Codebook Prompts:")
+        print(f"\nCurrent Codebook Prompts (no_gumbel: {no_gumbel}):")
         print_rich_table(df)
 
         # Log to WandB
