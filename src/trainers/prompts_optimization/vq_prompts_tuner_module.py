@@ -19,6 +19,7 @@ class PromptCodebookTuner(PreTrainedModel):
         init_prompt=None,
         fused_forward=True,
         gumbel_temp=0.05,
+        gumbel_noise_scale=0.0,
     ):
         super().__init__(config=model.config)
 
@@ -40,6 +41,7 @@ class PromptCodebookTuner(PreTrainedModel):
         self.init_prompt = init_prompt
         self.fused_forward = fused_forward
         self.gumbel_temp = gumbel_temp
+        self.gumbel_noise_scale = gumbel_noise_scale
 
         # Проверяем наличие chat template
         if not self.tokenizer.chat_template:
@@ -103,12 +105,6 @@ class PromptCodebookTuner(PreTrainedModel):
                 + init_emb
             )
 
-        self.noise_scale = nn.Parameter(
-            torch.tensor(0.05).to(
-                dtype=embedding_layer.weight.dtype, device=embedding_layer.weight.device
-            )
-        )  # Initial scale factor
-
         # Регистрируем эмбеддинги словаря
         self.register_buffer("vocab_embeddings", embedding_layer.weight.detach())
 
@@ -163,14 +159,14 @@ class PromptCodebookTuner(PreTrainedModel):
             flat_codebook, safe_vocab_emb.T
         )  # [num_prompts * seq_len, vocab_size]
 
-        # # Mask forbidden tokens
-        # if self.forbidden_token_ids:
-        #     logits[:, self.forbidden_token_ids] = -torch.finfo(logits.dtype).max
+        # Mask forbidden tokens
+        if self.forbidden_token_ids:
+            logits[:, self.forbidden_token_ids] = -torch.finfo(logits.dtype).max
 
         # Gumbel-Softmax with adaptive temperature
         if training:
             gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10))
-            scaled_noise = gumbel_noise * self.noise_scale
+            scaled_noise = gumbel_noise * self.gumbel_noise_scale
             noisy_logits = (logits + scaled_noise) / self.gumbel_temp
             probs = F.softmax(noisy_logits, dim=-1)
         else:
@@ -299,9 +295,7 @@ class PromptCodebookTuner(PreTrainedModel):
             )
 
             # Переформатируем выходы
-            logits = outputs.logits.view(
-                self.num_prompts, batch_size, -1
-            )
+            logits = outputs.logits.view(self.num_prompts, batch_size, -1)
 
             # Вычисляем лоссы для каждого промпта
             if outputs.loss is not None:

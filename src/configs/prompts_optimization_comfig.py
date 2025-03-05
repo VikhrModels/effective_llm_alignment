@@ -5,7 +5,7 @@ from typing import Optional, List
 @dataclass
 class PromptsOptimizationConfig:
     num_prompts: Optional[int] = field(
-        default=5,
+        default=3,
         metadata={"help": "Number of optimized prompts."},
     )
     prompt_len: Optional[int] = field(
@@ -23,8 +23,12 @@ class PromptsOptimizationConfig:
         },
     )
     gumbel_temp: Optional[float] = field(
-        default=0.05,
+        default=0.5,
         metadata={"help": "Temperature for gumbel softmax trick"},
+    )
+    gumbel_noise_scale: Optional[float] = field(
+        default=0.05,
+        metadata={"help": "Multiplier of added gumbel noise inside softmax"},
     )
     forbidden_token_ids: Optional[List[int]] = field(
         default=None,

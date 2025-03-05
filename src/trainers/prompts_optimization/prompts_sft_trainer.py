@@ -42,6 +42,7 @@ class PromptsSFTTrainer(SFTTrainer):
             init_prompt=prompt_args.init_prompt,
             fused_forward=prompt_args.fused_forward,
             gumbel_temp=prompt_args.gumbel_temp,
+            gumbel_noise_scale=prompt_args.gumbel_noise_scale,
         )
         # Initialize the parent RewardTrainer with the tuned_model and other parameters
         super().__init__(model=tuned_model, args=args, tokenizer=tokenizer, **kwargs)
@@ -96,9 +97,9 @@ class PromptsSFTTrainer(SFTTrainer):
         for i in range(self.prompt_args.num_prompts):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
-        metrics["noise_scale"] = (
-            self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
-        )
+        # metrics["noise_scale"] = (
+        #     self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
+        # )
         metrics["mean_sft_loss"] = total_sft_loss.detach().cpu()
 
         # Store metrics based on current phase
@@ -138,7 +139,9 @@ class PromptsSFTTrainer(SFTTrainer):
             return  # Only log from main process
 
         # Retrieve current codebook prompts
-        prompts_info = self.model.get_codebook_tokens(return_strings=True, no_gumbel=no_gumbel)
+        prompts_info = self.model.get_codebook_tokens(
+            return_strings=True, no_gumbel=no_gumbel
+        )
         prompts = prompts_info["prompts"]
         tokens = prompts_info["tokens"]
 

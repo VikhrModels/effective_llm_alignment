@@ -42,6 +42,7 @@ class PromptsRewardTrainer(RewardTrainer):
             init_prompt=prompt_args.init_prompt,
             fused_forward=prompt_args.fused_forward,
             gumbel_temp=prompt_args.gumbel_temp,
+            gumbel_noise_scale=prompt_args.gumbel_noise_scale,
         )
 
         # Initialize the parent RewardTrainer with the tuned_model and other parameters
@@ -126,9 +127,9 @@ class PromptsRewardTrainer(RewardTrainer):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
             metrics[f"accuracy_prompt_{i}"] = accuracy_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
-        metrics["noise_scale"] = (
-            self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
-        )
+        # metrics["noise_scale"] = (
+        #     self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
+        # )
         metrics["mean_pairwise_loss"] = total_pairwise_loss.detach().cpu()
         metrics["mean_accuracy"] = accuracy_per_prompt.mean().detach().cpu()
 
@@ -174,7 +175,9 @@ class PromptsRewardTrainer(RewardTrainer):
             return  # Only log from main process
 
         # Retrieve current codebook prompts
-        prompts_info = self.model.get_codebook_tokens(return_strings=True, no_gumbel=no_gumbel)
+        prompts_info = self.model.get_codebook_tokens(
+            return_strings=True, no_gumbel=no_gumbel
+        )
         prompts = prompts_info["prompts"]
         tokens = prompts_info["tokens"]
 
