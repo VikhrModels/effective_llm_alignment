@@ -3,7 +3,6 @@ import os
 import random
 import uuid
 import warnings
-from dataclasses import dataclass
 from typing import List
 
 import torch
@@ -14,12 +13,13 @@ from trl import ModelConfig, get_peft_config
 
 from src.callbacks.training_parameters_callback import ParameterStatsCallback
 from src.configs.classificaion_config import ClassificationConfig
-from src.configs.common_script_args import CommonScriptArguments
+from src.configs.additional.classification_args import CLFScriptArguments
 from src.trainers.classification_trainer import ClassificationTrainer
 from src.utils.datasets import load_datasets
 from src.utils.logger import setup_logging
 from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
 from src.utils.yaml_args_parser import H4ArgumentParser
+
 
 logger = get_logger(__name__)
 
@@ -30,12 +30,6 @@ os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
 os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
 DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
-
-
-@dataclass
-class CLFScriptArguments(CommonScriptArguments):
-    def __post_init__(self):
-        self.project_name = "classification" if self.project_name == "default-project" else self.project_name
 
 
 def get_label_list(raw_dataset, split="train") -> List[str]:

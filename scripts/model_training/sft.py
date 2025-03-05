@@ -3,24 +3,22 @@ import os
 import random
 import uuid
 import warnings
-from dataclasses import dataclass, field
-from functools import partial
 
 import torch
 from accelerate import PartialState
 from accelerate.logging import get_logger
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from transformers.integrations import is_deepspeed_zero3_enabled
-from trl import ModelConfig, get_peft_config
+from trl import SFTTrainer, SFTConfig, ModelConfig, get_peft_config
 
 from src.callbacks.generate_examples import GenerateExamplesCallback
-from src.configs.common_script_args import CommonScriptArguments
-from src.configs.smpo_config import SimpleMarginPOConfig
-from src.trainers.smpo_trainer import SimpleMarginPOTrainer
-from src.utils.datasets import load_datasets, prepare_generative_row
+from src.collators.completions_only import DataCollatorForCompletionOnlyLM
+from src.configs.additional.sft_args import SFTScriptArguments
+from src.utils.datasets import load_datasets
 from src.utils.logger import setup_logging
 from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
 from src.utils.yaml_args_parser import H4ArgumentParser
+
 
 logger = get_logger(__name__)
 
@@ -33,27 +31,12 @@ os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 DATASET_PROCESSING_THREADS = multiprocessing.cpu_count() // 2
 
 
-@dataclass
-class SMPOScriptArguments(CommonScriptArguments):
-    generate_eval_examples: bool | None = field(
-        default=True,
-        metadata={"help": "Do generate examples on eval"}
-    )
-    num_gen_examples: int | None = field(
-        default=50,
-        metadata={"help": "Number of examples to generate on eval phase"}
-    )
-
-    def __post_init__(self):
-        self.project_name = "smpo-tuning" if self.project_name == "default-project" else self.project_name
-
-
 def main():
-    parser = H4ArgumentParser((SMPOScriptArguments, SimpleMarginPOConfig, ModelConfig))
-    args, smpo_config, model_config = parser.parse()
+    parser = H4ArgumentParser((SFTScriptArguments, SFTConfig, ModelConfig))
+    args, sft_config, model_config = parser.parse()
 
-    setup_logging(logger, smpo_config)
-    set_seed(smpo_config.seed)  # in case of new tokens added without initialize...
+    setup_logging(logger, sft_config)
+    set_seed(sft_config.seed)  # in case of new tokens added without initialize...
 
     os.environ["WANDB_PROJECT"] = args.project_name
     os.environ['CLEARML_PROJECT'] = args.project_name
@@ -64,11 +47,35 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_config.model_name_or_path,
-        torch_dtype=torch.bfloat16 if smpo_config.bf16 else torch.float16,
+        torch_dtype=torch.bfloat16 if sft_config.bf16 else torch.float16,
+        # max_position_embeddings=sft_config.max_seq_length,
         attn_implementation=model_config.attn_implementation
     )
+    if sft_config.use_liger:
+        from liger_kernel.transformers import apply_liger_kernel_to_llama, apply_liger_kernel_to_mistral, apply_liger_kernel_to_qwen2
+        apply_liger_kernel_to_llama(
+            rope=False,
+            swiglu=True,
+            cross_entropy=False,
+            fused_linear_cross_entropy=True,
+            rms_norm=True
+        )
+        apply_liger_kernel_to_mistral(
+            rope=False,
+            swiglu=True,
+            cross_entropy=False,
+            fused_linear_cross_entropy=True,
+            rms_norm=True
+        )
+        apply_liger_kernel_to_qwen2(
+            rope=False,
+            swiglu=True,
+            cross_entropy=False,
+            fused_linear_cross_entropy=True,
+            rms_norm=True
+        )
 
-    setup_model_and_tokenizer(args, model, tokenizer)
+    setup_model_and_tokenizer(args, model, tokenizer, sft_config.max_seq_length)
 
     if model_config.use_peft:
         for n, p in model.named_parameters():
@@ -96,27 +103,47 @@ def main():
     ################
     # Dataset
     ################
+    def process_row(row, add_gen_prompt=False):
+        system_message = [{'role': 'system', 'content': args.system_prompt}] if args.system_prompt else []
+        history = row[args.conversation_field] if not add_gen_prompt else row[args.conversation_field][:-1]
+        if not args.model_support_system_role and history[0]["role"] == "system":
+            if len(history) > 1 and history[1]["role"] == "user":
+                # add sys prompt to first user message
+                history[1]["content"] = history[0]["content"] + "\n" + history[1]["content"]
+                history = history[1:]
+            else:
+                history[0]["role"] = "user"
+        
+        constructed_prompt = tokenizer.apply_chat_template(
+            system_message + history,
+            tokenize=False,
+            add_generation_prompt=add_gen_prompt
+        )
+        if tokenizer.bos_token is not None:
+            if constructed_prompt.startswith(tokenizer.bos_token):  # Remove extra bos token
+                constructed_prompt = constructed_prompt[len(tokenizer.bos_token):]
+        return tokenizer(constructed_prompt, truncation=True, padding=True, max_length=sft_config.max_seq_length)
+
     ds = load_datasets(args.dataset, args.test_size, args.dataset_ratio)
     generate_dataset = ds['test']
 
-    def apply_chat_templates(row):
-        row["prompt"] = tokenizer.apply_chat_template(row["prompt"], tokenize=False)
-        row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
-        row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
-        return row
+    signature_columns = ["input_ids", "labels", "attention_mask"]
+    extra_columns = list(set(ds['train'].column_names) - set(signature_columns))
 
-    with PartialState().main_process_first():
+    with PartialState().local_main_process_first():
         ds = ds.map(
-            apply_chat_templates,
+            process_row,
             num_proc=DATASET_PROCESSING_THREADS,
             keep_in_memory=True,
-            load_from_cache_file=True
+            load_from_cache_file=True,
+            remove_columns=extra_columns
         )
         generate_dataset = generate_dataset.map(
-            partial(prepare_generative_row, tokenizer=tokenizer, max_length=smpo_config.max_prompt_length),
+            lambda row: process_row(row, add_gen_prompt=True),
             num_proc=DATASET_PROCESSING_THREADS,
             keep_in_memory=True,
-            load_from_cache_file=True
+            load_from_cache_file=True,
+            remove_columns=extra_columns
         )
 
     train_dataset = ds["train"]
@@ -130,26 +157,36 @@ def main():
         logger.info('Example from gen dataset:')
         logger.info(generate_dataset[0])
 
+    collator = DataCollatorForCompletionOnlyLM(
+        response_prompt_template=args.assistant_message_template,
+        tokenizer=tokenizer
+    ) if args.train_only_on_completions else None
+
     generate_callback = GenerateExamplesCallback(
         preprocessed_dataset=generate_dataset,
         tokenizer=tokenizer,
         num_examples=args.num_gen_examples,
         is_deepspeed_zero3=is_deepspeed_zero3_enabled(),
-        logger_backend=smpo_config.report_to[0]
+        logger_backend=sft_config.report_to[0]
     )
 
     PartialState().wait_for_everyone()
 
+    sft_config.dataset_kwargs = {
+        "skip_prepare_dataset": True
+    }
+
     ################
     # Training
     ################
-    trainer = SimpleMarginPOTrainer(
+    trainer = SFTTrainer(
         model,
-        args=smpo_config,
+        args=sft_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         peft_config=peft_config,
+        data_collator=collator,
         callbacks=[generate_callback] if args.generate_eval_examples else []
     )
 
@@ -159,7 +196,7 @@ def main():
     if trainer.is_fsdp_enabled:
         trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
 
-    trainer.save_model(smpo_config.output_dir)
+    trainer.save_model(sft_config.output_dir)
 
 
 if __name__ == '__main__':

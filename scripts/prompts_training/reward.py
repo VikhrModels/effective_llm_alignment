@@ -1,23 +1,23 @@
 import multiprocessing
 import os
-import sys
 import random
+import sys
 import uuid
-import warnings
-from dataclasses import dataclass
 
 import torch
 from accelerate import PartialState
 from accelerate.logging import get_logger
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, set_seed, HfArgumentParser
-from trl import RewardTrainer, RewardConfig, ModelConfig, get_peft_config
+from trl import RewardConfig, ModelConfig
 
-from src.utils.logger import setup_logging
-from src.configs.common_script_args import CommonScriptArguments
 from src.callbacks.training_parameters_callback import ParameterStatsCallback
+from src.configs.additional.reward_args import RMScriptArguments
+from src.configs.prompts_optimization_comfig import PromptsOptimizationConfig
+from src.trainers.prompts_optimization.prompts_reward_trainer import PromptsRewardTrainer
 from src.utils.datasets import load_datasets
-from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
-from src.utils.yaml_args_parser import H4ArgumentParser
+from src.utils.logger import setup_logging
+from src.utils.model_preparation import setup_model_and_tokenizer
+
 
 logger = get_logger(__name__)
 
@@ -30,15 +30,9 @@ os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
 
 
-@dataclass
-class RMScriptArguments(CommonScriptArguments):
-    def __post_init__(self):
-        self.project_name = "reward-modeling" if self.project_name == "default-project" else self.project_name
-
-
 def main():
-    parser = HfArgumentParser((RMScriptArguments, RewardConfig, ModelConfig))
-    args, reward_config, model_config = parser.parse_yaml_file(os.path.abspath(sys.argv[1]))
+    parser = HfArgumentParser((RMScriptArguments, RewardConfig, ModelConfig, PromptsOptimizationConfig))
+    args, reward_config, model_config, prompts_config = parser.parse_yaml_file(os.path.abspath(sys.argv[1]))
 
     setup_logging(logger, reward_config)
     set_seed(reward_config.seed)  # in case of new tokens added without initialize...
@@ -59,23 +53,9 @@ def main():
 
     setup_model_and_tokenizer(args, model, tokenizer, reward_config.max_length)
 
-    if model_config.use_peft:
-        for n, p in model.named_parameters():
-            p.requires_grad = False
-        if model_config.lora_task_type != "SEQ_CLS":
-            warnings.warn(
-                "You are using a `task_type` that is different than `SEQ_CLS` for PEFT. This will lead to silent bugs"
-                " Make sure to pass --lora_task_type SEQ_CLS when using this script."
-            )
-        if args.unfreeze_layers_patterns:
-            warnings.warn(
-                "You can't use non-empty unfreeze_layers_patterns and peft together at this time, only peft config will be used"
-            )
-        peft_config = get_peft_config(model_config)
-    else:
-        if args.unfreeze_layers_patterns:
-            unfreeze_modules_by_patterns(model, args.unfreeze_layers_patterns)
-        peft_config = None
+    # # Замораживаем основную модель
+    # for param in model.parameters():
+    #     param.requires_grad = False
 
     if PartialState().is_main_process:
         logger.info(f'Tokenizer: {tokenizer}')
@@ -95,6 +75,7 @@ def main():
             "attention_mask_rejected": [],
         }
         for prompt, chosen, rejected in zip(examples["prompt"], examples["chosen"], examples["rejected"]):
+            prompt = [x for x in prompt if x['role'] != prompts_config.inserted_chat_role]  # needed only for prompts tuning
             chosen = tokenizer.apply_chat_template(prompt + chosen, tokenize=False, add_generation_prompt=False)
             rejected = tokenizer.apply_chat_template(prompt + rejected, tokenize=False, add_generation_prompt=False)
 
@@ -115,7 +96,7 @@ def main():
             batched=True,
             num_proc=DATASET_PROCESSING_THREADS,
             keep_in_memory=True,
-            load_from_cache_file=True
+            load_from_cache_file=False
         )
     train_dataset = ds["train"]
     eval_dataset = ds["test"]
@@ -131,13 +112,14 @@ def main():
     ################
     # Training
     ################
-    trainer = RewardTrainer(
+    trainer = PromptsRewardTrainer(
         model=model,
         tokenizer=tokenizer,
         args=reward_config,
+        prompt_args=prompts_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        peft_config=peft_config,
+        peft_config=None,
         callbacks=[ParameterStatsCallback]
     )
 

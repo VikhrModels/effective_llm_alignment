@@ -3,6 +3,7 @@ from typing import Optional
 
 from transformers import TrainingArguments
 
+
 @dataclass
 class ClassificationConfig(TrainingArguments):
     r"""
@@ -32,9 +33,7 @@ class ClassificationConfig(TrainingArguments):
     )
     num_labels: Optional[int] = field(
         default=2,
-        metadata={
-            "help": "Number of classes used in dataset labels"
-        },
+        metadata={"help": "Number of classes used in dataset labels"},
     )
     disable_dropout: bool = field(
         default=True,

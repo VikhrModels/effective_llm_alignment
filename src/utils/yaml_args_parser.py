@@ -17,7 +17,9 @@ DataClassType = NewType("DataClassType", Any)
 
 
 class H4ArgumentParser(HfArgumentParser):
-    def parse_yaml_and_args(self, yaml_arg: str, other_args: Optional[List[str]] = None) -> List[dataclass]:
+    def parse_yaml_and_args(
+        self, yaml_arg: str, other_args: Optional[List[str]] = None
+    ) -> List[dataclass]:
         """
         Parse a YAML file and overwrite the default/loaded values with the values provided to the command line.
 
@@ -34,7 +36,9 @@ class H4ArgumentParser(HfArgumentParser):
 
         outputs = []
         # strip other args list into dict of key-value pairs
-        other_args = {arg.split("=")[0].strip("-"): arg.split("=")[1] for arg in other_args}
+        other_args = {
+            arg.split("=")[0].strip("-"): arg.split("=")[1] for arg in other_args
+        }
         used_args = {}
 
         # overwrite the default/loaded value with the value provided to the command line
@@ -67,7 +71,9 @@ class H4ArgumentParser(HfArgumentParser):
                     if arg not in used_args:
                         used_args[arg] = val
                     else:
-                        raise ValueError(f"Duplicate argument provided: {arg}, may cause unexpected behavior")
+                        raise ValueError(
+                            f"Duplicate argument provided: {arg}, may cause unexpected behavior"
+                        )
 
             obj = data_class(**inputs)
             outputs.append(obj)
@@ -81,7 +87,9 @@ class H4ArgumentParser(HfArgumentParser):
             output = self.parse_yaml_file(os.path.abspath(sys.argv[1]))
         # parse command line args and yaml file
         elif len(sys.argv) > 2 and sys.argv[1].endswith(".yaml"):
-            output = self.parse_yaml_and_args(os.path.abspath(sys.argv[1]), sys.argv[2:])
+            output = self.parse_yaml_and_args(
+                os.path.abspath(sys.argv[1]), sys.argv[2:]
+            )
         # parse command line args only
         else:
             output = self.parse_args_into_dataclasses()
