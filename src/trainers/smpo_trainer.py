@@ -312,7 +312,7 @@ class SimpleMarginPOTrainer(Trainer):
                     initial_value=0.01,
                     final_value=self.target_margin,
                     schedule_type="linear",
-                    target="trainer"
+                    target="trainer",
                 )
             )
 

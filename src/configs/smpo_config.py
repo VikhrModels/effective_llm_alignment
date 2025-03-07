@@ -62,9 +62,9 @@ class SimpleMarginPOConfig(TrainingArguments):
     lower_clip_percentile: Optional[float] = 0.02
     upper_clip_percentile: Optional[float] = None
     min_log_prob: Optional[float] = -2.3
-    loss_type: Literal[
-        "sigmoid", "hinge", "ipo", "smooth_lower_bound"
-    ] = "smooth_lower_bound"
+    loss_type: Literal["sigmoid", "hinge", "ipo", "smooth_lower_bound"] = (
+        "smooth_lower_bound"
+    )
     use_margin_schedule: bool = True
 
     disable_dropout: bool = True

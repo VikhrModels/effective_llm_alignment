@@ -20,7 +20,8 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
     Trainer,
-    is_wandb_available, is_datasets_available,
+    is_wandb_available,
+    is_datasets_available,
 )
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput, seed_worker
@@ -323,7 +324,10 @@ class GroupedMarginPOTrainer(Trainer):
         with PartialState().local_main_process_first():
             # tokenize the dataset
             train_dataset = train_dataset.map(
-                self.tokenize_row, num_proc=args.dataset_num_proc, with_indices=True, keep_in_memory=True
+                self.tokenize_row,
+                num_proc=args.dataset_num_proc,
+                with_indices=True,
+                keep_in_memory=True,
             )
             if eval_dataset is not None:
                 eval_dataset = eval_dataset.map(
@@ -340,7 +344,7 @@ class GroupedMarginPOTrainer(Trainer):
                     initial_value=0.01,
                     final_value=self.target_margin,
                     schedule_type="linear",
-                    target="trainer"
+                    target="trainer",
                 )
             )
 
@@ -369,8 +373,12 @@ class GroupedMarginPOTrainer(Trainer):
 
         num_processes = self.accelerator.num_processes
 
-        assert len(self.train_dataset[0]['chosen']) == len(self.train_dataset[0]['rejected']), 'Completions count must be equal in chosen and rejected'
-        assert len(self.train_dataset[0]['chosen']) % num_processes == 0, f"Completions count must be divisible by num_processes ({num_processes})"
+        assert len(self.train_dataset[0]["chosen"]) == len(
+            self.train_dataset[0]["rejected"]
+        ), "Completions count must be equal in chosen and rejected"
+        assert len(self.train_dataset[0]["chosen"]) % num_processes == 0, (
+            f"Completions count must be divisible by num_processes ({num_processes})"
+        )
 
     def get_train_dataloader(self) -> DataLoader:
         """
@@ -388,9 +396,13 @@ class GroupedMarginPOTrainer(Trainer):
         group_ids = [ex["group_id"] for ex in self.train_dataset]
         data_collator = self.data_collator
         if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
-            train_dataset = self._remove_unused_columns(train_dataset, description="training")
+            train_dataset = self._remove_unused_columns(
+                train_dataset, description="training"
+            )
         else:
-            data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+            data_collator = self._get_collator_with_removed_columns(
+                data_collator, description="training"
+            )
 
         dataloader_params = {
             # "batch_size": self._train_batch_size,
@@ -402,14 +414,18 @@ class GroupedMarginPOTrainer(Trainer):
 
         if not isinstance(train_dataset, torch.utils.data.IterableDataset):
             # dataloader_params["sampler"] = self._get_train_sampler()
-            dataloader_params["batch_sampler"] = GroupedBatchSampler(group_ids=group_ids)
+            dataloader_params["batch_sampler"] = GroupedBatchSampler(
+                group_ids=group_ids
+            )
             # dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
-    def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
+    def get_eval_dataloader(
+        self, eval_dataset: Optional[Union[str, Dataset]] = None
+    ) -> DataLoader:
         """
         Returns the evaluation [`~torch.utils.data.DataLoader`].
 
@@ -444,9 +460,13 @@ class GroupedMarginPOTrainer(Trainer):
         group_ids = [ex["group_id"] for ex in eval_dataset]
 
         if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
-            eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
+            eval_dataset = self._remove_unused_columns(
+                eval_dataset, description="evaluation"
+            )
         else:
-            data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
+            data_collator = self._get_collator_with_removed_columns(
+                data_collator, description="evaluation"
+            )
 
         dataloader_params = {
             # "batch_size": self.args.eval_batch_size,
@@ -458,7 +478,9 @@ class GroupedMarginPOTrainer(Trainer):
 
         if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
             # dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
-            dataloader_params["batch_sampler"] = GroupedBatchSampler(group_ids=group_ids)
+            dataloader_params["batch_sampler"] = GroupedBatchSampler(
+                group_ids=group_ids
+            )
             # dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
@@ -541,7 +563,11 @@ class GroupedMarginPOTrainer(Trainer):
         )
 
     def _tokenize_single_pair(
-        self, prompt, chosen, rejected, model: Optional[Union[PreTrainedModel, nn.Module]] = None
+        self,
+        prompt,
+        chosen,
+        rejected,
+        model: Optional[Union[PreTrainedModel, nn.Module]] = None,
     ) -> Dict:
         """Tokenize a single row from a GroupedMarginPO specific dataset.
 
@@ -762,7 +788,12 @@ class GroupedMarginPOTrainer(Trainer):
 
         return batch
 
-    def tokenize_row(self, feature, idx: int, model: Optional[Union[PreTrainedModel, nn.Module]] = None) -> List[Dict]:
+    def tokenize_row(
+        self,
+        feature,
+        idx: int,
+        model: Optional[Union[PreTrainedModel, nn.Module]] = None,
+    ) -> List[Dict]:
         prompt = feature["prompt"]
         chosen_list = feature["chosen"]  # List of chosen completions
         rejected_list = feature["rejected"]  # List of rejected completions

@@ -16,7 +16,7 @@ from src.callbacks.generate_examples import GenerateExamplesCallback
 from src.callbacks.training_parameters_callback import ParameterStatsCallback
 from src.configs.additional.smpo_args import SMPOScriptArguments
 from src.configs.smpo_config import SimpleMarginPOConfig
-from src.trainers.smpo_trainer import SimpleMarginPOTrainer
+from src.trainers.gmpo_trainer import GroupedMarginPOTrainer
 from src.utils.datasets import load_datasets, prepare_generative_row
 from src.utils.logger import setup_logging
 from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
@@ -129,7 +129,7 @@ def main():
     ################
     # Training
     ################
-    trainer = SimpleMarginPOTrainer(
+    trainer = GroupedMarginPOTrainer(
         model,
         args=smpo_config,
         train_dataset=train_dataset,

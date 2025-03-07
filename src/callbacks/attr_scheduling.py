@@ -39,7 +39,9 @@ class VariableSchedulerCallback(TrainerCallback):
         self.target = target
 
         if self.target not in ["model", "trainer"]:
-            raise ValueError(f"Invalid target '{target}'. Must be 'model' or 'trainer'.")
+            raise ValueError(
+                f"Invalid target '{target}'. Must be 'model' or 'trainer'."
+            )
 
     def on_train_begin(self, args, state, control, **kwargs):
         self.total_steps = state.max_steps - self.warmup_steps
@@ -90,7 +92,9 @@ class VariableSchedulerCallback(TrainerCallback):
         if hasattr(target_obj, self.attribute_name):
             setattr(target_obj, self.attribute_name, current_value)
         else:
-            raise AttributeError(f"{type(target_obj)} does not have attribute {self.attribute_name}")
+            raise AttributeError(
+                f"{type(target_obj)} does not have attribute {self.attribute_name}"
+            )
 
     def get_current_value(self, model):
         """Get current value of the scheduled variable"""
