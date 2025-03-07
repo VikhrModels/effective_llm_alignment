@@ -87,8 +87,8 @@ def main():
 
     def apply_chat_templates(row):
         row["prompt"] = tokenizer.apply_chat_template(row["prompt"], tokenize=False)
-        row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
-        row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
+        row["chosen"] = [tokenizer.apply_chat_template(chosen, tokenize=False) for chosen in row["chosen"]]
+        row["rejected"] = [tokenizer.apply_chat_template(rejected, tokenize=False) for rejected in row["rejected"]]
         return row
 
     with PartialState().main_process_first():
