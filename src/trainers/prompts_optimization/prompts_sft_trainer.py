@@ -12,6 +12,7 @@ from transformers import (
 from trl import RewardTrainer, RewardConfig, SFTTrainer
 from trl.trainer.utils import log_table_to_comet_experiment, print_rich_table
 
+from src.callbacks.attr_scheduling import VariableSchedulerCallback
 from src.configs.prompts_optimization_comfig import PromptsOptimizationConfig
 from src.trainers.prompts_optimization.vq_prompts_tuner_module import (
     PromptCodebookTuner,
@@ -51,6 +52,15 @@ class PromptsSFTTrainer(SFTTrainer):
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
         self.log_codebook_prompts(no_gumbel=False)
+
+        self.add_callback(
+            VariableSchedulerCallback(
+                attribute_name="gumbel_temp",
+                initial_value=prompt_args.gumbel_temp,
+                final_value=0.005,
+                schedule_type="cosine",
+            )
+        )
 
     def store_metrics(
         self, metrics: Dict[str, float], train_eval: Literal["train", "eval"] = "train"
@@ -97,9 +107,12 @@ class PromptsSFTTrainer(SFTTrainer):
         for i in range(self.prompt_args.num_prompts):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
-        # metrics["noise_scale"] = (
-        #     self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
-        # )
+        metrics["gumbel_temp"] = torch.tensor(
+            self.accelerator.unwrap_model(model).gumbel_temp
+        )
+        metrics["gumbel_noise_scale"] = (
+            self.accelerator.unwrap_model(model).gumbel_noise_scale.data.detach().cpu()
+        )
         metrics["mean_sft_loss"] = total_sft_loss.detach().cpu()
 
         # Store metrics based on current phase

@@ -41,7 +41,6 @@ class PromptCodebookTuner(PreTrainedModel):
         self.init_prompt = init_prompt
         self.fused_forward = fused_forward
         self.gumbel_temp = gumbel_temp
-        self.gumbel_noise_scale = gumbel_noise_scale
 
         # Проверяем наличие chat template
         if not self.tokenizer.chat_template:
@@ -105,6 +104,12 @@ class PromptCodebookTuner(PreTrainedModel):
                 + init_emb
             )
 
+        self.gumbel_noise_scale = nn.Parameter(
+            torch.tensor(gumbel_noise_scale).to(
+                dtype=embedding_layer.weight.dtype, device=embedding_layer.weight.device
+            )
+        )  # Initial scale factor
+
         # Регистрируем эмбеддинги словаря
         self.register_buffer("vocab_embeddings", embedding_layer.weight.detach())
 
@@ -143,7 +148,7 @@ class PromptCodebookTuner(PreTrainedModel):
             suffix, dtype=torch.long
         )
 
-    def _quantize_codebook(self, training=True):
+    def _quantize_codebook(self, training=True, cached_noise=None):
         """Quantization with corrected Gumbel-Softmax and straight-through estimator."""
         flat_codebook = self.codebook.view(-1, self.emb_dim)
 
@@ -163,10 +168,18 @@ class PromptCodebookTuner(PreTrainedModel):
         if self.forbidden_token_ids:
             logits[:, self.forbidden_token_ids] = -torch.finfo(logits.dtype).max
 
+        # For returning noise in case of parallel calls
+        scaled_noise = None
+
         # Gumbel-Softmax with adaptive temperature
         if training:
-            gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10))
-            scaled_noise = gumbel_noise * self.gumbel_noise_scale
+            if cached_noise is None:
+                gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10))
+                scaled_noise = gumbel_noise * torch.clamp(
+                    self.gumbel_noise_scale, -0.2, 0.2
+                )
+            else:
+                scaled_noise = cached_noise
             noisy_logits = (logits + scaled_noise) / self.gumbel_temp
             probs = F.softmax(noisy_logits, dim=-1)
         else:
@@ -191,7 +204,7 @@ class PromptCodebookTuner(PreTrainedModel):
         )
         hard_indices = hard_indices.view(self.num_prompts, self.prompt_len)
 
-        return quantized_embeddings, hard_indices, probs
+        return quantized_embeddings, hard_indices, probs, scaled_noise
 
     def _calculate_aux_losses(self, probs):
         """Дополнительные функции потерь"""
@@ -211,12 +224,12 @@ class PromptCodebookTuner(PreTrainedModel):
 
         return dissim_loss, special_penalty
 
-    def forward(self, input_ids, attention_mask=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, cached_noise=None, **kwargs):
         batch_size = input_ids.size(0)
 
         # Квантование кодбука
-        prompt_embeddings, prompt_indices, probs = self._quantize_codebook(
-            training=self.training
+        prompt_embeddings, prompt_indices, probs, scaled_noise = (
+            self._quantize_codebook(training=self.training, cached_noise=cached_noise)
         )
         dissim_loss, special_penalty = self._calculate_aux_losses(probs)
 
@@ -295,7 +308,9 @@ class PromptCodebookTuner(PreTrainedModel):
             )
 
             # Переформатируем выходы
-            logits = outputs.logits.view(self.num_prompts, batch_size, -1)
+            logits = outputs.logits.view(
+                self.num_prompts, batch_size, *outputs.logits.shape[1:]
+            )
 
             # Вычисляем лоссы для каждого промпта
             if outputs.loss is not None:
@@ -369,14 +384,19 @@ class PromptCodebookTuner(PreTrainedModel):
             self.dissim_coef * dissim_loss + self.special_token_coef * special_penalty
         )
 
-        return {"logits": logits, "losses": losses, "aux_loss": aux_loss}
+        return {
+            "logits": logits,
+            "losses": losses,
+            "aux_loss": aux_loss,
+            "cached_noise": scaled_noise,
+        }
 
     def get_codebook_tokens(self, no_gumbel=True, return_strings=True):
         """
         Возвращает промпты с чат-темплейтом в виде токенов
         """
         with torch.no_grad():
-            _, prompt_indices, _ = self._quantize_codebook(training=not no_gumbel)
+            _, prompt_indices, _, _ = self._quantize_codebook(training=not no_gumbel)
 
             full_prompts = []
             for prompt in prompt_indices:
