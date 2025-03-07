@@ -1,29 +1,30 @@
 import inspect
-import random
 import warnings
 from collections import defaultdict
 from contextlib import nullcontext
 from functools import wraps
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Tuple, Union
+from typing import Dict, Literal, Optional
 
+import datasets
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from accelerate import PartialState
 from datasets import Dataset
-from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, DataCollator, PreTrainedModel, PreTrainedTokenizerBase, Trainer, is_wandb_available
-from trl.trainer import CPOTrainer
+from torch.utils.data import Sampler, DataLoader
+from transformers import (
+    AutoModelForCausalLM,
+    DataCollator,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+    Trainer,
+    is_wandb_available, is_datasets_available,
+)
 from transformers.trainer_callback import TrainerCallback
-from transformers.trainer_utils import EvalLoopOutput
-from transformers.utils import is_torch_fx_proxy, is_peft_available
-
-from dataclasses import dataclass
-from typing import Dict, Literal, Optional
-
-from transformers import TrainingArguments
-
+from transformers.trainer_utils import EvalLoopOutput, seed_worker
+from transformers.utils import is_peft_available
 from trl.trainer.utils import (
     DPODataCollatorWithPadding,
     disable_dropout_in_model,
@@ -32,24 +33,50 @@ from trl.trainer.utils import (
     trl_sanitze_kwargs_for_tagging,
 )
 
+from src.callbacks.attr_scheduling import VariableSchedulerCallback
 from src.configs.smpo_config import SimpleMarginPOConfig
 
 if is_peft_available():
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 if is_wandb_available():
-    import wandb
+    pass
 
 
-class SimpleMarginPOTrainer(Trainer):
+class GroupedBatchSampler(Sampler):
+    def __init__(self, group_ids):
+        super().__init__(None)  # Initialize base Sampler
+        self.group_ids = np.array(group_ids)
+
+        # Create group index mapping
+        self.groups = {}
+        for idx, gid in enumerate(group_ids):
+            if gid not in self.groups:
+                self.groups[gid] = []
+            self.groups[gid].append(idx)
+
+        # Convert to list of index groups
+        self.grouped_indices = list(self.groups.values())
+
+    def __iter__(self):
+        # Yield one group/batch at a time
+        for group in self.grouped_indices:
+            yield group
+
+    def __len__(self):
+        return len(self.grouped_indices)  # Number of batches = number of groups
+
+
+class GroupedMarginPOTrainer(Trainer):
     r"""
-    Initialize SimpleMarginPOTrainer.
+    Initialize GroupedMarginPOTrainer.
+    Warning: Currently, only groups with size divisible by process count are supported!
 
     Args:
         model (`transformers.PreTrainedModel`):
             The model to train, preferably an `AutoModelForSequenceClassification`.
         args (`SimpleMarginPOConfig`):
-            The SimpleMarginPOConfig config arguments to use for training.
+            The GroupedMarginPOConfig config arguments to use for training.
         data_collator (`transformers.DataCollator`):
             The data collator to use for training. If None is specified, the default data collator (`DPODataCollatorWithPadding`) will be used
             which will pad the sequences to the maximum length of the sequences in the batch, given a dataset of paired sequences.
@@ -74,7 +101,7 @@ class SimpleMarginPOTrainer(Trainer):
             a dictionary string to metric values.
     """
 
-    _tag_names = ["trl", "SimpleMarginPO"]
+    _tag_names = ["trl", "GroupedMarginPO"]
 
     def __init__(
         self,
@@ -86,15 +113,22 @@ class SimpleMarginPOTrainer(Trainer):
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         model_init: Optional[Callable[[], PreTrainedModel]] = None,
         callbacks: Optional[List[TrainerCallback]] = None,
-        optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
-        preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+        optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (
+            None,
+            None,
+        ),
+        preprocess_logits_for_metrics: Optional[
+            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        ] = None,
         peft_config: Optional[Dict] = None,
         compute_metrics: Optional[Callable[[EvalLoopOutput], Dict]] = None,
     ):
         if args.model_init_kwargs is None:
             model_init_kwargs = {}
         elif not isinstance(model, str):
-            raise ValueError("You passed model_kwargs to the SimpleMarginPOTrainer. But your model is already instantiated.")
+            raise ValueError(
+                "You passed model_kwargs to the GroupedMarginPOTrainer. But your model is already instantiated."
+            )
         else:
             model_init_kwargs = args.model_init_kwargs
             model_init_kwargs["torch_dtype"] = (
@@ -105,7 +139,7 @@ class SimpleMarginPOTrainer(Trainer):
 
         if isinstance(model, str):
             warnings.warn(
-                "You passed a model_id to the SimpleMarginPOTrainer. This will automatically create an "
+                "You passed a model_id to the GroupedMarginPOTrainer. This will automatically create an "
                 "`AutoModelForCausalLM` or a `PeftModel` (if you passed a `peft_config`) for you."
             )
             model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
@@ -123,17 +157,23 @@ class SimpleMarginPOTrainer(Trainer):
             if isinstance(model, PeftModel):
                 model = model.merge_and_unload()
 
-            if getattr(model, "is_loaded_in_8bit", False) or getattr(model, "is_loaded_in_4bit", False):
+            if getattr(model, "is_loaded_in_8bit", False) or getattr(
+                model, "is_loaded_in_4bit", False
+            ):
                 _support_gc_kwargs = hasattr(
                     args, "gradient_checkpointing_kwargs"
                 ) and "gradient_checkpointing_kwargs" in list(
                     inspect.signature(prepare_model_for_kbit_training).parameters
                 )
 
-                prepare_model_kwargs = {"use_gradient_checkpointing": args.gradient_checkpointing}
+                prepare_model_kwargs = {
+                    "use_gradient_checkpointing": args.gradient_checkpointing
+                }
 
                 if _support_gc_kwargs:
-                    prepare_model_kwargs["gradient_checkpointing_kwargs"] = args.gradient_checkpointing_kwargs
+                    prepare_model_kwargs["gradient_checkpointing_kwargs"] = (
+                        args.gradient_checkpointing_kwargs
+                    )
 
                 model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
             elif getattr(args, "gradient_checkpointing", False):
@@ -145,7 +185,9 @@ class SimpleMarginPOTrainer(Trainer):
                     def make_inputs_require_grad(module, input, output):
                         output.requires_grad_(True)
 
-                    model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+                    model.get_input_embeddings().register_forward_hook(
+                        make_inputs_require_grad
+                    )
 
             # get peft model with the given config
             model = get_peft_model(model, peft_config)
@@ -166,18 +208,16 @@ class SimpleMarginPOTrainer(Trainer):
                 def make_inputs_require_grad(module, input, output):
                     output.requires_grad_(True)
 
-                model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-        if args.generate_during_eval and not is_wandb_available():
-            raise ValueError(
-                "`generate_during_eval=True` requires Weights and Biases to be installed."
-                " Please install `wandb` to resolve."
-            )
+                model.get_input_embeddings().register_forward_hook(
+                    make_inputs_require_grad
+                )
 
         if model is not None:
             self.is_encoder_decoder = model.config.is_encoder_decoder
         elif args.is_encoder_decoder is None:
-            raise ValueError("When no model is provided, you need to pass the parameter is_encoder_decoder.")
+            raise ValueError(
+                "When no model is provided, you need to pass the parameter is_encoder_decoder."
+            )
         else:
             self.is_encoder_decoder = args.is_encoder_decoder
 
@@ -186,10 +226,12 @@ class SimpleMarginPOTrainer(Trainer):
             self.pad_token_id = model.config.pad_token_id
 
         if tokenizer is None:
-            raise ValueError("tokenizer must be specified to tokenize a SimpleMarginPO dataset.")
+            raise ValueError(
+                "tokenizer must be specified to tokenize a GroupedMarginPO dataset."
+            )
         if args.max_length is None:
             warnings.warn(
-                "`max_length` is not set in the SimpleMarginPOConfig's init"
+                "`max_length` is not set in the GroupedMarginPOConfig's init"
                 " it will default to `512` by default, but you should do it yourself in the future.",
                 UserWarning,
             )
@@ -198,7 +240,7 @@ class SimpleMarginPOTrainer(Trainer):
             max_length = args.max_length
         if args.max_prompt_length is None:
             warnings.warn(
-                "`max_prompt_length` is not set in the SimpleMarginPOConfig's init"
+                "`max_prompt_length` is not set in the GroupedMarginPOConfig's init"
                 " it will default to `128` by default, but you should do it yourself in the future.",
                 UserWarning,
             )
@@ -208,7 +250,7 @@ class SimpleMarginPOTrainer(Trainer):
 
         if args.max_target_length is None and self.is_encoder_decoder:
             warnings.warn(
-                "When using an encoder decoder architecture, you should set `max_target_length` in the SimpleMarginPOConfig's init"
+                "When using an encoder decoder architecture, you should set `max_target_length` in the GroupedMarginPOConfig's init"
                 " it will default to `128` by default, but you should do it yourself in the future.",
                 UserWarning,
             )
@@ -240,17 +282,19 @@ class SimpleMarginPOTrainer(Trainer):
             disable_dropout_in_model(model)
 
         self.max_length = max_length
-        self.generate_during_eval = args.generate_during_eval
         self.label_pad_token_id = args.label_pad_token_id
-        self.padding_value = args.padding_value if args.padding_value is not None else tokenizer.pad_token_id
+        self.padding_value = (
+            args.padding_value
+            if args.padding_value is not None
+            else tokenizer.pad_token_id
+        )
         self.max_prompt_length = max_prompt_length
         self.truncation_mode = args.truncation_mode
         self.max_target_length = max_target_length
         self.tokenizer = tokenizer
 
         self.beta = args.beta
-        self.margin_min = args.margin_min
-        self.margin_delta = args.margin_delta
+        self.target_margin = args.target_margin
         self.chosen_sft_ratio = args.chosen_sft_ratio
         self.loss_type = args.loss_type
         self.lower_clip_percentile = args.lower_clip_percentile
@@ -258,19 +302,18 @@ class SimpleMarginPOTrainer(Trainer):
         self.min_log_prob = args.min_log_prob
         self.special_token_id = self.tokenizer.eos_token_id
 
-        assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
-        assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
+        assert args.target_margin >= 0, "target_margin must be greater or equal to 0"
         if args.lower_clip_percentile is not None:
-            assert args.lower_clip_percentile > 0 and args.lower_clip_percentile <= 0.5, "lower_trim_percentile must > 0 and <= 0.5"
+            assert (
+                args.lower_clip_percentile > 0 and args.lower_clip_percentile <= 0.5
+            ), "lower_trim_percentile must > 0 and <= 0.5"
         if args.upper_clip_percentile is not None:
-            assert args.upper_clip_percentile < 1 and args.upper_trim_percentile >= 0.5, "lower_trim_percentile must < 1 and >= 0.5"
+            assert (
+                args.upper_clip_percentile < 1 and args.upper_clip_percentile >= 0.5
+            ), "lower_trim_percentile must < 1 and >= 0.5"
         if args.min_log_prob is not None:
-            assert args.min_log_prob < 0, "min_log_prob must be below zero, recommended value: -2.3"
-        
-        if args.margin_delta > 0 and args.loss_type != 'smooth_double_bound':
-            warnings.warn(
-                f"You passed the parameter 'margin_delta' > 0, which is not supported with the selected loss_type {args.loss_type}!"
-                f" It only works with 'smooth_double_bound' loss_type."
+            assert args.min_log_prob < 0, (
+                "min_log_prob must be below zero, recommended value: -2.3"
             )
 
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
@@ -279,9 +322,27 @@ class SimpleMarginPOTrainer(Trainer):
         # see: https://github.com/huggingface/trl/pull/1255
         with PartialState().local_main_process_first():
             # tokenize the dataset
-            train_dataset = train_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc, keep_in_memory=True)
+            train_dataset = train_dataset.map(
+                self.tokenize_row, num_proc=args.dataset_num_proc, with_indices=True, keep_in_memory=True
+            )
             if eval_dataset is not None:
-                eval_dataset = eval_dataset.map(self.tokenize_row, num_proc=args.dataset_num_proc, keep_in_memory=True)
+                eval_dataset = eval_dataset.map(
+                    self.tokenize_row,
+                    num_proc=args.dataset_num_proc,
+                    with_indices=True,
+                    keep_in_memory=True,
+                )
+
+        if args.use_margin_schedule:
+            callbacks.append(
+                VariableSchedulerCallback(
+                    attribute_name="target_margin",
+                    initial_value=0.01,
+                    final_value=self.target_margin,
+                    schedule_type="linear",
+                    target="trainer"
+                )
+            )
 
         super().__init__(
             model=model,
@@ -306,6 +367,112 @@ class SimpleMarginPOTrainer(Trainer):
                 "Your `Trainer` does not have an `accelerator` object. Consider upgrading `transformers`."
             )
 
+        num_processes = self.accelerator.num_processes
+
+        assert len(self.train_dataset[0]['chosen']) == len(self.train_dataset[0]['rejected']), 'Completions count must be equal in chosen and rejected'
+        assert len(self.train_dataset[0]['chosen']) % num_processes == 0, f"Completions count must be divisible by num_processes ({num_processes})"
+
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Returns the training [`~torch.utils.data.DataLoader`].
+
+        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
+        training if necessary) otherwise.
+
+        Subclass and override this method if you want to inject some custom behavior.
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        train_dataset = self.train_dataset
+        group_ids = [ex["group_id"] for ex in self.train_dataset]
+        data_collator = self.data_collator
+        if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
+            train_dataset = self._remove_unused_columns(train_dataset, description="training")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+
+        dataloader_params = {
+            # "batch_size": self._train_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(train_dataset, torch.utils.data.IterableDataset):
+            # dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["batch_sampler"] = GroupedBatchSampler(group_ids=group_ids)
+            # dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
+
+    def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
+        """
+        Returns the evaluation [`~torch.utils.data.DataLoader`].
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            eval_dataset (`str` or `torch.utils.data.Dataset`, *optional*):
+                If a `str`, will use `self.eval_dataset[eval_dataset]` as the evaluation dataset. If a `Dataset`, will override `self.eval_dataset` and must implement `__len__`. If it is a [`~datasets.Dataset`], columns not accepted by the `model.forward()` method are automatically removed.
+        """
+        if eval_dataset is None and self.eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+        # If we have persistent workers, don't do a fork bomb especially as eval datasets
+        # don't change during training
+        dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
+        if (
+            hasattr(self, "_eval_dataloaders")
+            and dataloader_key in self._eval_dataloaders
+            and self.args.dataloader_persistent_workers
+        ):
+            return self.accelerator.prepare(self._eval_dataloaders[dataloader_key])
+
+        eval_dataset = (
+            self.eval_dataset[eval_dataset]
+            if isinstance(eval_dataset, str)
+            else eval_dataset
+            if eval_dataset is not None
+            else self.eval_dataset
+        )
+        data_collator = self.data_collator
+
+        group_ids = [ex["group_id"] for ex in eval_dataset]
+
+        if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
+            eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
+
+        dataloader_params = {
+            # "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
+            # dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
+            dataloader_params["batch_sampler"] = GroupedBatchSampler(group_ids=group_ids)
+            # dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # accelerator.free_memory() will destroy the references, so
+        # we need to store the non-prepared version
+        eval_dataloader = DataLoader(eval_dataset, **dataloader_params)
+        if self.args.dataloader_persistent_workers:
+            if hasattr(self, "_eval_dataloaders"):
+                self._eval_dataloaders[dataloader_key] = eval_dataloader
+            else:
+                self._eval_dataloaders = {dataloader_key: eval_dataloader}
+
+        return self.accelerator.prepare(eval_dataloader)
+
     def build_tokenized_answer(self, prompt, answer):
         """
         Llama tokenizer does satisfy `enc(a + b) = enc(a) + enc(b)`.
@@ -314,11 +481,17 @@ class SimpleMarginPOTrainer(Trainer):
             https://github.com/EleutherAI/lm-evaluation-harness/pull/531#issuecomment-1595586257
         """
 
-        full_tokenized = self.processing_class(prompt + answer, add_special_tokens=False)
-        prompt_input_ids = self.processing_class(prompt, add_special_tokens=False)["input_ids"]
+        full_tokenized = self.processing_class(
+            prompt + answer, add_special_tokens=False
+        )
+        prompt_input_ids = self.processing_class(prompt, add_special_tokens=False)[
+            "input_ids"
+        ]
 
         answer_input_ids = full_tokenized["input_ids"][len(prompt_input_ids) :]
-        answer_attention_mask = full_tokenized["attention_mask"][len(prompt_input_ids) :]
+        answer_attention_mask = full_tokenized["attention_mask"][
+            len(prompt_input_ids) :
+        ]
 
         # Concat tokens to form `enc(a) + enc(a + b)[len(enc(a)):]`
         full_concat_input_ids = np.concatenate([prompt_input_ids, answer_input_ids])
@@ -327,7 +500,9 @@ class SimpleMarginPOTrainer(Trainer):
         full_input_ids = np.array(full_tokenized["input_ids"])
 
         if len(full_input_ids) != len(full_concat_input_ids):
-            raise ValueError("Prompt input ids and answer input ids should have the same length.")
+            raise ValueError(
+                "Prompt input ids and answer input ids should have the same length."
+            )
 
         # On some tokenizers, like Llama-2 tokenizer, there are occasions where tokens
         # can be merged together when tokenizing prompt+answer. This could result
@@ -337,17 +512,26 @@ class SimpleMarginPOTrainer(Trainer):
 
         # If tokenized prompt is different than both prompt+answer, then it means the
         # last token has changed due to merging.
-        if prompt_input_ids != full_tokenized["input_ids"][:response_token_ids_start_idx]:
+        if (
+            prompt_input_ids
+            != full_tokenized["input_ids"][:response_token_ids_start_idx]
+        ):
             response_token_ids_start_idx -= 1
 
         prompt_input_ids = full_tokenized["input_ids"][:response_token_ids_start_idx]
-        prompt_attention_mask = full_tokenized["attention_mask"][:response_token_ids_start_idx]
+        prompt_attention_mask = full_tokenized["attention_mask"][
+            :response_token_ids_start_idx
+        ]
 
         if len(prompt_input_ids) != len(prompt_attention_mask):
-            raise ValueError("Prompt input ids and attention mask should have the same length.")
+            raise ValueError(
+                "Prompt input ids and attention mask should have the same length."
+            )
 
         answer_input_ids = full_tokenized["input_ids"][response_token_ids_start_idx:]
-        answer_attention_mask = full_tokenized["attention_mask"][response_token_ids_start_idx:]
+        answer_attention_mask = full_tokenized["attention_mask"][
+            response_token_ids_start_idx:
+        ]
 
         return dict(
             prompt_input_ids=prompt_input_ids,
@@ -356,8 +540,10 @@ class SimpleMarginPOTrainer(Trainer):
             attention_mask=answer_attention_mask,
         )
 
-    def tokenize_row(self, feature, model: Optional[Union[PreTrainedModel, nn.Module]] = None) -> Dict:
-        """Tokenize a single row from a SimpleMarginPO specific dataset.
+    def _tokenize_single_pair(
+        self, prompt, chosen, rejected, model: Optional[Union[PreTrainedModel, nn.Module]] = None
+    ) -> Dict:
+        """Tokenize a single row from a GroupedMarginPO specific dataset.
 
         At this stage, we don't convert to PyTorch tensors yet; we just handle the truncation
         in case the prompt + chosen or prompt + rejected responses is/are too long. First
@@ -368,9 +554,6 @@ class SimpleMarginPOTrainer(Trainer):
             label_pad_token_id  for the prompt tokens.
         """
         batch = {}
-        prompt = feature["prompt"]
-        chosen = feature["chosen"]
-        rejected = feature["rejected"]
 
         if not self.is_encoder_decoder:
             # Check issues below for more details
@@ -397,7 +580,9 @@ class SimpleMarginPOTrainer(Trainer):
 
             chosen_prompt_len_input_ids = len(chosen_tokens["prompt_input_ids"])
             rejected_prompt_len_input_ids = len(rejected_tokens["prompt_input_ids"])
-            prompt_len_input_ids = min(chosen_prompt_len_input_ids, rejected_prompt_len_input_ids)
+            prompt_len_input_ids = min(
+                chosen_prompt_len_input_ids, rejected_prompt_len_input_ids
+            )
 
             for k, v in prompt_tokens.items():
                 prompt_tokens[k] = v[:prompt_len_input_ids]
@@ -405,9 +590,17 @@ class SimpleMarginPOTrainer(Trainer):
             # Make sure prompts only have one different token at most an
             # and length only differs by 1 at most
             num_diff_tokens = sum(
-                [a != b for a, b in zip(chosen_tokens["prompt_input_ids"], rejected_tokens["prompt_input_ids"])]
+                [
+                    a != b
+                    for a, b in zip(
+                        chosen_tokens["prompt_input_ids"],
+                        rejected_tokens["prompt_input_ids"],
+                    )
+                ]
             )
-            num_diff_len = abs(chosen_prompt_len_input_ids - rejected_prompt_len_input_ids)
+            num_diff_len = abs(
+                chosen_prompt_len_input_ids - rejected_prompt_len_input_ids
+            )
             if num_diff_tokens > 1 or num_diff_len > 1:
                 raise ValueError(
                     "Chosen and rejected prompt_input_ids might only differ on the "
@@ -416,60 +609,107 @@ class SimpleMarginPOTrainer(Trainer):
 
             # add BOS token to head of prompt. Avoid adding if it's already there
             bos_token_id = self.processing_class.bos_token_id
-            if (prompt_len_input_ids == 0 or bos_token_id != prompt_tokens["prompt_input_ids"][0]) and bos_token_id is not None:
-                prompt_tokens["prompt_input_ids"] = [bos_token_id] + prompt_tokens["prompt_input_ids"]
-                prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
-            if (chosen_prompt_len_input_ids == 0 or bos_token_id != chosen_tokens["prompt_input_ids"][0]) and bos_token_id is not None:
-                chosen_tokens["prompt_input_ids"] = [bos_token_id] + chosen_tokens["prompt_input_ids"]
-                chosen_tokens["prompt_attention_mask"] = [1] + chosen_tokens["prompt_attention_mask"]
-            if (rejected_prompt_len_input_ids == 0 or bos_token_id != rejected_tokens["prompt_input_ids"][0]) and bos_token_id is not None:
-                rejected_tokens["prompt_input_ids"] = [bos_token_id] + rejected_tokens["prompt_input_ids"]
-                rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens["prompt_attention_mask"]
+            if (
+                prompt_len_input_ids == 0
+                or bos_token_id != prompt_tokens["prompt_input_ids"][0]
+            ) and bos_token_id is not None:
+                prompt_tokens["prompt_input_ids"] = [bos_token_id] + prompt_tokens[
+                    "prompt_input_ids"
+                ]
+                prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens[
+                    "prompt_attention_mask"
+                ]
+            if (
+                chosen_prompt_len_input_ids == 0
+                or bos_token_id != chosen_tokens["prompt_input_ids"][0]
+            ) and bos_token_id is not None:
+                chosen_tokens["prompt_input_ids"] = [bos_token_id] + chosen_tokens[
+                    "prompt_input_ids"
+                ]
+                chosen_tokens["prompt_attention_mask"] = [1] + chosen_tokens[
+                    "prompt_attention_mask"
+                ]
+            if (
+                rejected_prompt_len_input_ids == 0
+                or bos_token_id != rejected_tokens["prompt_input_ids"][0]
+            ) and bos_token_id is not None:
+                rejected_tokens["prompt_input_ids"] = [bos_token_id] + rejected_tokens[
+                    "prompt_input_ids"
+                ]
+                rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens[
+                    "prompt_attention_mask"
+                ]
 
             # add EOS token to end of answer. Avoid adding if it's already there
             eos_token_id = self.processing_class.eos_token_id
-            if len(chosen_tokens["input_ids"]) == 0 or eos_token_id != chosen_tokens["input_ids"][-1]:
+            if (
+                len(chosen_tokens["input_ids"]) == 0
+                or eos_token_id != chosen_tokens["input_ids"][-1]
+            ):
                 chosen_tokens["input_ids"].append(eos_token_id)
                 chosen_tokens["attention_mask"].append(1)
-            if len(rejected_tokens["input_ids"]) == 0 or eos_token_id != rejected_tokens["input_ids"][-1]:
+            if (
+                len(rejected_tokens["input_ids"]) == 0
+                or eos_token_id != rejected_tokens["input_ids"][-1]
+            ):
                 rejected_tokens["input_ids"].append(eos_token_id)
                 rejected_tokens["attention_mask"].append(1)
 
-            longer_response_length = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
+            longer_response_length = max(
+                len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"])
+            )
 
             # if combined sequence is too long, truncate the prompt
             for answer_tokens in [chosen_tokens, rejected_tokens, prompt_tokens]:
-                if len(answer_tokens["prompt_input_ids"]) + longer_response_length > self.max_length:
+                if (
+                    len(answer_tokens["prompt_input_ids"]) + longer_response_length
+                    > self.max_length
+                ):
                     if self.truncation_mode == "keep_start":
                         for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                            answer_tokens[k] = answer_tokens[k][: self.max_prompt_length]
+                            answer_tokens[k] = answer_tokens[k][
+                                : self.max_prompt_length
+                            ]
                     elif self.truncation_mode == "keep_end":
                         for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                            answer_tokens[k] = answer_tokens[k][-self.max_prompt_length :]
+                            answer_tokens[k] = answer_tokens[k][
+                                -self.max_prompt_length :
+                            ]
                     else:
-                        raise ValueError(f"Unknown truncation mode: {self.truncation_mode}")
+                        raise ValueError(
+                            f"Unknown truncation mode: {self.truncation_mode}"
+                        )
 
             # if that's still too long, truncate the response
             for answer_tokens in [chosen_tokens, rejected_tokens]:
-                if len(answer_tokens["prompt_input_ids"]) + longer_response_length > self.max_length:
+                if (
+                    len(answer_tokens["prompt_input_ids"]) + longer_response_length
+                    > self.max_length
+                ):
                     for k in ["input_ids", "attention_mask"]:
-                        answer_tokens[k] = answer_tokens[k][: self.max_length - self.max_prompt_length]
+                        answer_tokens[k] = answer_tokens[k][
+                            : self.max_length - self.max_prompt_length
+                        ]
 
             # Create labels
             chosen_sequence_tokens = {
-                k: chosen_tokens[f"prompt_{k}"] + chosen_tokens[k] for k in ["input_ids", "attention_mask"]
+                k: chosen_tokens[f"prompt_{k}"] + chosen_tokens[k]
+                for k in ["input_ids", "attention_mask"]
             }
             rejected_sequence_tokens = {
-                k: rejected_tokens[f"prompt_{k}"] + rejected_tokens[k] for k in ["input_ids", "attention_mask"]
+                k: rejected_tokens[f"prompt_{k}"] + rejected_tokens[k]
+                for k in ["input_ids", "attention_mask"]
             }
             chosen_sequence_tokens["labels"] = chosen_sequence_tokens["input_ids"][:]
-            chosen_sequence_tokens["labels"][: len(chosen_tokens["prompt_input_ids"])] = [
-                self.label_pad_token_id
-            ] * len(chosen_tokens["prompt_input_ids"])
-            rejected_sequence_tokens["labels"] = rejected_sequence_tokens["input_ids"][:]
-            rejected_sequence_tokens["labels"][: len(rejected_tokens["prompt_input_ids"])] = [
-                self.label_pad_token_id
-            ] * len(rejected_tokens["prompt_input_ids"])
+            chosen_sequence_tokens["labels"][
+                : len(chosen_tokens["prompt_input_ids"])
+            ] = [self.label_pad_token_id] * len(chosen_tokens["prompt_input_ids"])
+            rejected_sequence_tokens["labels"] = rejected_sequence_tokens["input_ids"][
+                :
+            ]
+            rejected_sequence_tokens["labels"][
+                : len(rejected_tokens["prompt_input_ids"])
+            ] = [self.label_pad_token_id] * len(rejected_tokens["prompt_input_ids"])
 
             for k, toks in {
                 "chosen_": chosen_sequence_tokens,
@@ -483,13 +723,22 @@ class SimpleMarginPOTrainer(Trainer):
 
         else:
             chosen_tokens = self.processing_class(
-                chosen, truncation=True, max_length=self.max_target_length, add_special_tokens=True
+                chosen,
+                truncation=True,
+                max_length=self.max_target_length,
+                add_special_tokens=True,
             )
             rejected_tokens = self.processing_class(
-                rejected, truncation=True, max_length=self.max_target_length, add_special_tokens=True
+                rejected,
+                truncation=True,
+                max_length=self.max_target_length,
+                add_special_tokens=True,
             )
             prompt_tokens = self.processing_class(
-                prompt, truncation=True, max_length=self.max_prompt_length, add_special_tokens=True
+                prompt,
+                truncation=True,
+                max_length=self.max_prompt_length,
+                add_special_tokens=True,
             )
 
             batch["chosen_labels"] = chosen_tokens["input_ids"]
@@ -497,15 +746,33 @@ class SimpleMarginPOTrainer(Trainer):
             batch["prompt_input_ids"] = prompt_tokens["input_ids"]
             batch["prompt_attention_mask"] = prompt_tokens["attention_mask"]
 
-            if model is not None and hasattr(model, "prepare_decoder_input_ids_from_labels"):
-                batch["rejected_decoder_input_ids"] = model.prepare_decoder_input_ids_from_labels(
-                    labels=torch.tensor(batch["rejected_labels"])
+            if model is not None and hasattr(
+                model, "prepare_decoder_input_ids_from_labels"
+            ):
+                batch["rejected_decoder_input_ids"] = (
+                    model.prepare_decoder_input_ids_from_labels(
+                        labels=torch.tensor(batch["rejected_labels"])
+                    )
                 )
-                batch["chosen_decoder_input_ids"] = model.prepare_decoder_input_ids_from_labels(
-                    labels=torch.tensor(batch["chosen_labels"])
+                batch["chosen_decoder_input_ids"] = (
+                    model.prepare_decoder_input_ids_from_labels(
+                        labels=torch.tensor(batch["chosen_labels"])
+                    )
                 )
 
         return batch
+
+    def tokenize_row(self, feature, idx: int, model: Optional[Union[PreTrainedModel, nn.Module]] = None) -> List[Dict]:
+        prompt = feature["prompt"]
+        chosen_list = feature["chosen"]  # List of chosen completions
+        rejected_list = feature["rejected"]  # List of rejected completions
+
+        tokenized_examples = []
+        for chosen, rejected in zip(chosen_list, rejected_list):
+            batch = self._tokenize_single_pair(prompt, chosen, rejected, model)
+            batch["group_id"] = idx
+            tokenized_examples.append(batch)
+        return tokenized_examples  # List of examples for the group
 
     @staticmethod
     def concatenated_inputs(
@@ -530,9 +797,13 @@ class SimpleMarginPOTrainer(Trainer):
         concatenated_batch = {}
 
         if is_encoder_decoder:
-            max_length = max(batch["chosen_labels"].shape[1], batch["rejected_labels"].shape[1])
+            max_length = max(
+                batch["chosen_labels"].shape[1], batch["rejected_labels"].shape[1]
+            )
         else:
-            max_length = max(batch["chosen_input_ids"].shape[1], batch["rejected_input_ids"].shape[1])
+            max_length = max(
+                batch["chosen_input_ids"].shape[1], batch["rejected_input_ids"].shape[1]
+            )
 
         for k in batch:
             if k.startswith("chosen") and isinstance(batch[k], torch.Tensor):
@@ -543,7 +814,9 @@ class SimpleMarginPOTrainer(Trainer):
                 elif k.endswith("_attention_mask"):
                     pad_value = 0
                 concatenated_key = k.replace("chosen", "concatenated")
-                concatenated_batch[concatenated_key] = pad_to_length(batch[k], max_length, pad_value=pad_value)
+                concatenated_batch[concatenated_key] = pad_to_length(
+                    batch[k], max_length, pad_value=pad_value
+                )
         for k in batch:
             if k.startswith("rejected") and isinstance(batch[k], torch.Tensor):
                 if "labels" in k or is_encoder_decoder:
@@ -562,7 +835,9 @@ class SimpleMarginPOTrainer(Trainer):
                 ).to(device=device)
 
         if is_encoder_decoder:
-            concatenated_batch["concatenated_input_ids"] = batch["prompt_input_ids"].repeat(2, 1).to(device=device)
+            concatenated_batch["concatenated_input_ids"] = (
+                batch["prompt_input_ids"].repeat(2, 1).to(device=device)
+            )
             concatenated_batch["concatenated_attention_mask"] = (
                 batch["prompt_attention_mask"].repeat(2, 1).to(device=device)
             )
@@ -574,7 +849,7 @@ class SimpleMarginPOTrainer(Trainer):
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        """Compute the SimpleMarginPO loss for a batch of policy model log probabilities.
+        """Compute the GroupedMarginPO loss for a batch of policy model log probabilities.
 
         Args:
             policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
@@ -582,40 +857,41 @@ class SimpleMarginPOTrainer(Trainer):
 
         Returns:
             A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
-            The losses tensor contains the SimpleMarginPO loss for each example in the batch.
+            The losses tensor contains the GroupedMarginPO loss for each example in the batch.
             The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
         """
         pi_logratios = policy_chosen_logps - policy_rejected_logps
         pi_logratios = pi_logratios.to(self.accelerator.device)
-        
-        logits_lower_bound = pi_logratios - self.margin_min
-        logits_upper_bound = logits_lower_bound - self.margin_delta
+
+        logits_lower_bound = pi_logratios - self.target_margin
 
         if self.loss_type == "sigmoid":
-            losses = (
-                -F.logsigmoid(self.beta * logits_lower_bound)
-            )
+            losses = -F.logsigmoid(self.beta * logits_lower_bound)
         elif self.loss_type == "hinge":
             losses = torch.relu(-self.beta * logits_lower_bound)
         elif self.loss_type == "ipo":
             losses = (self.beta * logits_lower_bound).pow(2)
         elif self.loss_type == "smooth_lower_bound":
             losses = torch.relu(-self.beta * logits_lower_bound).pow(2)
-        elif self.loss_type == "smooth_double_bound":
-            losses = torch.relu(-self.beta * logits_lower_bound).pow(2) + torch.relu(self.beta * logits_upper_bound).pow(2)
         else:
             raise ValueError(
-                f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid', 'hinge', 'ipo', 'smooth_lower_bound', 'smooth_double_bound']"
+                f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid', 'hinge', 'ipo', 'smooth_lower_bound']"
             )
 
-        chosen_rewards = self.beta * policy_chosen_logps.to(self.accelerator.device).detach()
-        rejected_rewards = self.beta * policy_rejected_logps.to(self.accelerator.device).detach()
+        chosen_rewards = (
+            self.beta * policy_chosen_logps.to(self.accelerator.device).detach()
+        )
+        rejected_rewards = (
+            self.beta * policy_rejected_logps.to(self.accelerator.device).detach()
+        )
 
         return losses, chosen_rewards, rejected_rewards
 
     def concatenated_forward(
         self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    ) -> Tuple[
+        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+    ]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
@@ -632,7 +908,9 @@ class SimpleMarginPOTrainer(Trainer):
         model_kwargs = (
             {
                 "labels": concatenated_batch["concatenated_labels"],
-                "decoder_input_ids": concatenated_batch.pop("concatenated_decoder_input_ids", None),
+                "decoder_input_ids": concatenated_batch.pop(
+                    "concatenated_decoder_input_ids", None
+                ),
             }
             if self.is_encoder_decoder
             else {}
@@ -649,13 +927,13 @@ class SimpleMarginPOTrainer(Trainer):
             all_logits,
             concatenated_batch["concatenated_labels"],
             len_chosen,
-            average_log_prob=True,  # SimpleMarginPO/IPO mode
+            average_log_prob=True,  # GroupedMarginPO/IPO mode
             is_encoder_decoder=self.is_encoder_decoder,
             label_pad_token_id=self.label_pad_token_id,
             lower_clip_percentile=self.lower_clip_percentile,
             upper_clip_percentile=self.upper_clip_percentile,
             min_log_prob=self.min_log_prob,
-            special_token_id=self.special_token_id
+            special_token_id=self.special_token_id,
         )
 
         chosen_logps = all_logps[:len_chosen]
@@ -667,45 +945,14 @@ class SimpleMarginPOTrainer(Trainer):
         chosen_labels = concatenated_batch["concatenated_labels"][:len_chosen]
         rejected_labels = concatenated_batch["concatenated_labels"][len_chosen:]
 
-        return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_labels, rejected_labels)
-
-    # @staticmethod
-    # def get_batch_logps(
-    #     logits: torch.FloatTensor,
-    #     labels: torch.LongTensor,
-    #     average_log_prob: bool = True,
-    #     label_pad_token_id: int = -100,
-    #     is_encoder_decoder: bool = False,
-    # ) -> torch.FloatTensor:
-    #     """Compute the log probabilities of the given labels under the given logits.
-
-    #     Args:
-    #         logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
-    #         labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
-    #         average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-    #         label_pad_token_id: The label pad token id.
-    #         is_encoder_decoder: Whether the model is an encoder-decoder model.
-
-    #     Returns:
-    #         A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
-    #     """
-    #     if logits.shape[:-1] != labels.shape:
-    #         raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-
-    #     if not is_encoder_decoder:
-    #         labels = labels[:, 1:].clone()
-    #         logits = logits[:, :-1, :]
-    #     loss_mask = labels != label_pad_token_id
-
-    #     # dummy tokens; we'll ignore the losses on these tokens later
-    #     labels[(labels == label_pad_token_id)] = 0
-
-    #     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
-
-    #     if average_log_prob:
-    #         return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
-    #     else:
-    #         return (per_token_logps * loss_mask).sum(-1)
+        return (
+            chosen_logps,
+            rejected_logps,
+            chosen_logits,
+            rejected_logits,
+            chosen_labels,
+            rejected_labels,
+        )
 
     @staticmethod
     def get_batch_logps(
@@ -721,46 +968,67 @@ class SimpleMarginPOTrainer(Trainer):
         is_encoder_decoder: bool = False,
     ) -> torch.FloatTensor:
         if logits.shape[:-1] != labels.shape:
-            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-    
+            raise ValueError(
+                "Logits (batch and sequence length dim) and labels must have the same shape."
+            )
+
         if not is_encoder_decoder:
             labels = labels[:, 1:].clone()
             logits = logits[:, :-1, :]
         loss_mask = labels != label_pad_token_id
-    
+
         labels[(labels == label_pad_token_id)] = 0
-    
-        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+        # TODO: replace with selective_log_softmax from trl
+        per_token_logps = torch.gather(
+            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
+        ).squeeze(2)
 
         # Invert logp for special_token_id for rejected tokens
         if special_token_id is not None:
             special_token_mask = (labels == special_token_id) & loss_mask
-            per_token_logps[special_token_mask][chosen_count:] = -per_token_logps[special_token_mask][chosen_count:]
-    
+            per_token_logps[special_token_mask][chosen_count:] = -per_token_logps[
+                special_token_mask
+            ][chosen_count:]
+
         # Winsorize extremal values for rejected tokens
         if lower_clip_percentile is not None:
-            per_token_logps_float = per_token_logps[loss_mask][chosen_count:].detach().float()
-            lower_bound = torch.quantile(per_token_logps_float, lower_clip_percentile, dim=-1)
-            per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < lower_bound,
-                                                         lower_bound,
-                                                         per_token_logps[loss_mask][chosen_count:])
+            per_token_logps_float = (
+                per_token_logps[loss_mask][chosen_count:].detach().float()
+            )
+            lower_bound = torch.quantile(
+                per_token_logps_float, lower_clip_percentile, dim=-1
+            )
+            per_token_logps[loss_mask][chosen_count:] = torch.where(
+                per_token_logps[loss_mask][chosen_count:] < lower_bound,
+                lower_bound,
+                per_token_logps[loss_mask][chosen_count:],
+            )
             # loss_mask[chosen_count:] = torch.where(per_token_logps[chosen_count:] < lower_bound, False, loss_mask[chosen_count:])
 
         # Winsorize extremal values for chosen tokens
         if upper_clip_percentile is not None:
-            per_token_logps_float = per_token_logps[loss_mask][:chosen_count].detach().float()
-            upper_bound = torch.quantile(per_token_logps_float, upper_clip_percentile, dim=-1)
-            per_token_logps[loss_mask][:chosen_count] = torch.where(per_token_logps[loss_mask][:chosen_count] > upper_bound,
-                                                         upper_bound,
-                                                         per_token_logps[loss_mask][:chosen_count])
+            per_token_logps_float = (
+                per_token_logps[loss_mask][:chosen_count].detach().float()
+            )
+            upper_bound = torch.quantile(
+                per_token_logps_float, upper_clip_percentile, dim=-1
+            )
+            per_token_logps[loss_mask][:chosen_count] = torch.where(
+                per_token_logps[loss_mask][:chosen_count] > upper_bound,
+                upper_bound,
+                per_token_logps[loss_mask][:chosen_count],
+            )
             # loss_mask[:chosen_count] = torch.where(per_token_logps[:chosen_count] > upper_bound, False, loss_mask[:chosen_count])
 
         # Clip minimum logprob for rejected tokens
         if min_log_prob is not None:
-            per_token_logps[loss_mask][chosen_count:] = torch.where(per_token_logps[loss_mask][chosen_count:] < min_log_prob,
-                                                                    min_log_prob,
-                                                                    per_token_logps[loss_mask][chosen_count:])
-        
+            per_token_logps[loss_mask][chosen_count:] = torch.where(
+                per_token_logps[loss_mask][chosen_count:] < min_log_prob,
+                min_log_prob,
+                per_token_logps[loss_mask][chosen_count:],
+            )
+
         if average_log_prob:
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
         else:
@@ -772,7 +1040,7 @@ class SimpleMarginPOTrainer(Trainer):
         batch: Dict[str, Union[List, torch.LongTensor]],
         train_eval: Literal["train", "eval"] = "train",
     ):
-        """Compute the SimpleMarginPO loss and other metrics for the given batch of inputs for train or test."""
+        """Compute the GroupedMarginPO loss and other metrics for the given batch of inputs for train or test."""
         metrics = {}
         prefix = "eval_" if train_eval == "eval" else ""
 
@@ -792,38 +1060,56 @@ class SimpleMarginPOTrainer(Trainer):
 
         loss = losses.mean()
 
-
         # Double SFT part
         loss_func = nn.CrossEntropyLoss()
-            
+
         if not self.is_encoder_decoder:
             policy_chosen_logits = policy_chosen_logits[..., :-1, :].contiguous()
             chosen_labels = chosen_labels[..., 1:].clone()
-        chosen_sft_loss = loss_func(policy_chosen_logits.view(-1, policy_chosen_logits.shape[-1]), chosen_labels.view(-1))
+        chosen_sft_loss = loss_func(
+            policy_chosen_logits.view(-1, policy_chosen_logits.shape[-1]),
+            chosen_labels.view(-1),
+        )
         metrics[f"{prefix}chosen_sft_loss"] = chosen_sft_loss.detach().cpu()
-            
+
         if not self.is_encoder_decoder:
             policy_rejected_logits = policy_rejected_logits[..., :-1, :].contiguous()
             rejected_labels = rejected_labels[..., 1:].clone()
-        rejeced_sft_loss = loss_func(policy_rejected_logits.view(-1, policy_rejected_logits.shape[-1]), rejected_labels.view(-1))
+        rejeced_sft_loss = loss_func(
+            policy_rejected_logits.view(-1, policy_rejected_logits.shape[-1]),
+            rejected_labels.view(-1),
+        )
         metrics[f"{prefix}rejected_sft_loss"] = rejeced_sft_loss.detach().cpu()
-        
-        metrics[f"{prefix}weighted_sft_loss"] = chosen_sft_loss.detach().cpu() + rejeced_sft_loss.detach().cpu() * (1 - self.chosen_sft_ratio)
 
-        combined_sft_loss = chosen_sft_loss * self.chosen_sft_ratio + rejeced_sft_loss * (1 - self.chosen_sft_ratio)
+        metrics[f"{prefix}weighted_sft_loss"] = (
+            chosen_sft_loss.detach().cpu()
+            + rejeced_sft_loss.detach().cpu() * (1 - self.chosen_sft_ratio)
+        )
+
+        combined_sft_loss = (
+            chosen_sft_loss * self.chosen_sft_ratio
+            + rejeced_sft_loss * (1 - self.chosen_sft_ratio)
+        )
         loss = combined_sft_loss + loss
 
         # Caclulating metrics
-        
+
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
 
         metrics[f"{prefix}rewards/chosen"] = chosen_rewards.mean().cpu()
         metrics[f"{prefix}rewards/rejected"] = rejected_rewards.mean().cpu()
         metrics[f"{prefix}rewards/accuracies"] = reward_accuracies.mean().cpu()
-        metrics[f"{prefix}rewards/margins"] = (chosen_rewards - rejected_rewards).mean().cpu()
+        metrics[f"{prefix}rewards/margins"] = (
+            (chosen_rewards - rejected_rewards).mean().cpu()
+        )
+        if self.args.use_margin_schedule:
+            metrics[f"{prefix}rewards/target_margin"] = self.target_margin
+
         metrics[f"{prefix}logps/rejected"] = policy_rejected_logps.detach().mean().cpu()
         metrics[f"{prefix}logps/chosen"] = policy_chosen_logps.detach().mean().cpu()
-        metrics[f"{prefix}logits/rejected"] = policy_rejected_logits.detach().mean().cpu()
+        metrics[f"{prefix}logits/rejected"] = (
+            policy_rejected_logits.detach().mean().cpu()
+        )
         metrics[f"{prefix}logits/chosen"] = policy_chosen_logits.detach().mean().cpu()
 
         return loss, metrics
@@ -833,6 +1119,7 @@ class SimpleMarginPOTrainer(Trainer):
         model: Union[PreTrainedModel, nn.Module],
         inputs: Dict[str, Union[torch.Tensor, Any]],
         return_outputs=False,
+        num_items_in_batch=None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         if not self.use_dpo_data_collator:
             warnings.warn(
@@ -840,10 +1127,16 @@ class SimpleMarginPOTrainer(Trainer):
                 "DPODataCollatorWithPadding - you might see unexpected behavior. Alternatively, you can implement your own prediction_step method if you are using a custom data collator"
             )
 
-        compute_loss_context_manager = torch.cuda.amp.autocast if self._peft_has_been_casted_to_bf16 else nullcontext
+        compute_loss_context_manager = (
+            torch.cuda.amp.autocast
+            if self._peft_has_been_casted_to_bf16
+            else nullcontext
+        )
 
         with compute_loss_context_manager():
-            loss, metrics = self.get_batch_loss_metrics(model, inputs, train_eval="train")
+            loss, metrics = self.get_batch_loss_metrics(
+                model, inputs, train_eval="train"
+            )
 
         # force log the metrics
         self.store_metrics(metrics, train_eval="train")
@@ -870,10 +1163,16 @@ class SimpleMarginPOTrainer(Trainer):
             else:
                 ignore_keys = []
 
-        prediction_context_manager = torch.cuda.amp.autocast if self._peft_has_been_casted_to_bf16 else nullcontext
+        prediction_context_manager = (
+            torch.cuda.amp.autocast
+            if self._peft_has_been_casted_to_bf16
+            else nullcontext
+        )
 
         with torch.no_grad(), prediction_context_manager():
-            loss, metrics = self.get_batch_loss_metrics(model, inputs, train_eval="eval")
+            loss, metrics = self.get_batch_loss_metrics(
+                model, inputs, train_eval="eval"
+            )
 
         # force log the metrics
         self.store_metrics(metrics, train_eval="eval")
@@ -886,13 +1185,17 @@ class SimpleMarginPOTrainer(Trainer):
             "eval_logits/chosen": metrics["eval_logits/chosen"],
             "eval_logits/rejected": metrics["eval_logits/rejected"],
         }
-        logits = tuple(v.unsqueeze(dim=0) for k, v in logits_dict.items() if k not in ignore_keys)
+        logits = tuple(
+            v.unsqueeze(dim=0) for k, v in logits_dict.items() if k not in ignore_keys
+        )
         logits = torch.stack(logits).mean(axis=1).to(self.accelerator.device)
         labels = torch.zeros(logits.shape[0], device=self.accelerator.device)
 
         return (loss.detach(), logits, labels)
 
-    def store_metrics(self, metrics: Dict[str, float], train_eval: Literal["train", "eval"] = "train") -> None:
+    def store_metrics(
+        self, metrics: Dict[str, float], train_eval: Literal["train", "eval"] = "train"
+    ) -> None:
         for key, value in metrics.items():
             self._stored_metrics[train_eval][key].append(value)
 
@@ -913,11 +1216,20 @@ class SimpleMarginPOTrainer(Trainer):
         return super().log(logs, start_time)
 
     @wraps(Trainer.push_to_hub)
-    def push_to_hub(self, commit_message: Optional[str] = "End of training", blocking: bool = True, **kwargs) -> str:
+    def push_to_hub(
+        self,
+        commit_message: Optional[str] = "End of training",
+        blocking: bool = True,
+        **kwargs,
+    ) -> str:
         """
         Overwrite the `push_to_hub` method in order to force-add the tag "smpo" when pushing the
         model on the Hub. Please refer to `~transformers.Trainer.push_to_hub` for more details.
         """
-        kwargs = trl_sanitze_kwargs_for_tagging(model=self.model, tag_names=self._tag_names, kwargs=kwargs)
+        kwargs = trl_sanitze_kwargs_for_tagging(
+            model=self.model, tag_names=self._tag_names, kwargs=kwargs
+        )
 
-        return super().push_to_hub(commit_message=commit_message, blocking=blocking, **kwargs)
+        return super().push_to_hub(
+            commit_message=commit_message, blocking=blocking, **kwargs
+        )
