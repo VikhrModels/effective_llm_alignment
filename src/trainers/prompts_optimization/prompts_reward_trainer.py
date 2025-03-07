@@ -12,6 +12,7 @@ from transformers import (
 from trl import RewardTrainer, RewardConfig
 from trl.trainer.utils import log_table_to_comet_experiment, print_rich_table
 
+from src.callbacks.attr_scheduling import VariableSchedulerCallback
 from src.configs.prompts_optimization_comfig import PromptsOptimizationConfig
 from src.trainers.prompts_optimization.vq_prompts_tuner_module import (
     PromptCodebookTuner,
@@ -52,6 +53,15 @@ class PromptsRewardTrainer(RewardTrainer):
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
 
         self.log_codebook_prompts(no_gumbel=False)
+
+        self.add_callback(
+            VariableSchedulerCallback(
+                attribute_name="gumbel_temp",
+                initial_value=prompt_args.gumbel_temp,
+                final_value=0.005,
+                schedule_type="cosine",
+            )
+        )
 
     def store_metrics(
         self, metrics: Dict[str, float], train_eval: Literal["train", "eval"] = "train"
@@ -94,6 +104,7 @@ class PromptsRewardTrainer(RewardTrainer):
         outputs_rejected = model(
             input_ids=inputs["input_ids_rejected"],
             attention_mask=inputs.get("attention_mask_rejected", None),
+            cached_noise=outputs_chosen["cached_noise"],
         )
         logits_rejected = outputs_rejected["logits"].squeeze(
             -1
@@ -127,9 +138,12 @@ class PromptsRewardTrainer(RewardTrainer):
             metrics[f"loss_prompt_{i}"] = loss_per_prompt[i].detach().cpu()
             metrics[f"accuracy_prompt_{i}"] = accuracy_per_prompt[i].detach().cpu()
         metrics["aux_loss"] = aux_loss.detach().cpu()
-        # metrics["noise_scale"] = (
-        #     self.accelerator.unwrap_model(model).noise_scale.data.clone().detach().cpu()
-        # )
+        metrics["gumbel_temp"] = torch.tensor(
+            self.accelerator.unwrap_model(model).gumbel_temp
+        )
+        metrics["gumbel_noise_scale"] = (
+            self.accelerator.unwrap_model(model).gumbel_noise_scale.data.detach().cpu()
+        )
         metrics["mean_pairwise_loss"] = total_pairwise_loss.detach().cpu()
         metrics["mean_accuracy"] = accuracy_per_prompt.mean().detach().cpu()
 

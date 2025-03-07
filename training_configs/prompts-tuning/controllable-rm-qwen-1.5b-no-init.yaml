@@ -10,10 +10,9 @@ evaluation_strategy: "epoch"
 num_prompts: 1
 dissim_coef: 0.0
 gumbel_temp: 1.0
-gumbel_noise_scale: 0.05
+gumbel_noise_scale: 0.1
 prompt_len: 96
 fused_forward: True
-init_prompt: "The answer must be good, safe, high-quality, and relevant to the user's question. The answer should provide well-researched, factual information while avoiding harmful, biased, or misleading content. Additionally, it should prioritize user safety by avoiding inappropriate or dangerous advice and maintaining ethical standards."
 save_steps: 360
 eval_steps: 60
 save_only_model: True
@@ -31,8 +30,8 @@ dataloader_num_workers: 2
 max_length: 16384
 attn_implementation: "sdpa"
 torch_compile: False
-run_name: "controllable-rm-qwen-1.5b-prompts-optimization-np1-dc0.0-pl96-pi-gumbel-dynamic"
-output_dir: "checkpoints/controllable-rm-qwen-1.5b-prompts-optimization-np1-dc0.0-pl96-pi-gumbel-dynamic"
+run_name: "controllable-rm-qwen-1.5b-prompts-optimization-np1-dc0.0-pl96-pi-gumbel-dynamic-no-init"
+output_dir: "checkpoints/controllable-rm-qwen-1.5b-prompts-optimization-np1-dc0.0-pl96-pi-gumbel-dynamic-no-init"
 report_to: "wandb"
 bf16: True
 fp16: False
