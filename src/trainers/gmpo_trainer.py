@@ -804,13 +804,11 @@ class GroupedMarginPOTrainer(Trainer):
         rejected_list = features["rejected"][0]
         rewards_list = features["rewards"][0] if 'rewards' in features else [None] * len(chosen_list)
 
-        # Filter out None rewards and calculate mean and std
-        valid_rewards = [reward for reward in rewards_list if reward is not None]
-        if valid_rewards:
-            reward_mean = np.mean(valid_rewards)
-            reward_std = np.std(valid_rewards)
+        if 'rewards' in features:
+            reward_mean = np.mean(rewards_list)
+            reward_std = np.std(rewards_list)
         else:
-            reward_mean, reward_std = 0, 1  # Default values if no valid rewards
+            reward_mean, reward_std = 0, 1  # Default values if no rewards
 
         tokenized_examples = defaultdict(list)
 
