@@ -325,6 +325,8 @@ class GroupedMarginPOTrainer(Trainer):
             # tokenize the dataset
             train_dataset = train_dataset.map(
                 self.tokenize_row,
+                batched=True,
+                batch_size=1,
                 num_proc=args.dataset_num_proc,
                 with_indices=True,
                 keep_in_memory=True,
@@ -332,6 +334,8 @@ class GroupedMarginPOTrainer(Trainer):
             if eval_dataset is not None:
                 eval_dataset = eval_dataset.map(
                     self.tokenize_row,
+                    batched=True,
+                    batch_size=1,
                     num_proc=args.dataset_num_proc,
                     with_indices=True,
                     keep_in_memory=True,
@@ -790,20 +794,38 @@ class GroupedMarginPOTrainer(Trainer):
 
     def tokenize_row(
         self,
-        feature,
-        idx: int,
+        features,  # Input is a batch (even if batch_size=1)
+        indices: List[int],  # List of indices since we're using batched processing
         model: Optional[Union[PreTrainedModel, nn.Module]] = None,
-    ) -> List[Dict]:
-        prompt = feature["prompt"]
-        chosen_list = feature["chosen"]  # List of chosen completions
-        rejected_list = feature["rejected"]  # List of rejected completions
+    ) -> Dict[str, List]:
+        # For batch_size=1, unpack the single feature
+        prompt = features["prompt"][0]
+        chosen_list = features["chosen"][0]
+        rejected_list = features["rejected"][0]
+        rewards_list = features["rewards"][0] if 'rewards' in features else [None] * len(chosen_list)
 
-        tokenized_examples = []
-        for chosen, rejected in zip(chosen_list, rejected_list):
+        # Filter out None rewards and calculate mean and std
+        valid_rewards = [reward for reward in rewards_list if reward is not None]
+        if valid_rewards:
+            reward_mean = np.mean(valid_rewards)
+            reward_std = np.std(valid_rewards)
+        else:
+            reward_mean, reward_std = 0, 1  # Default values if no valid rewards
+
+        tokenized_examples = defaultdict(list)
+
+        idx = indices[0]  # Since batch_size=1, indices is a single-element list
+        for chosen, rejected, reward in zip(chosen_list, rejected_list, rewards_list):
             batch = self._tokenize_single_pair(prompt, chosen, rejected, model)
-            batch["group_id"] = idx
-            tokenized_examples.append(batch)
-        return tokenized_examples  # List of examples for the group
+            # Append each tokenized example to the batch
+            for key in tokenized_examples:
+                tokenized_examples[key].append(batch[key])
+            tokenized_examples["group_id"].append(idx)
+            if reward is not None:
+                advantage = (reward - reward_mean) / reward_std
+                tokenized_examples['advantage'].append(advantage)
+
+        return tokenized_examples
 
     @staticmethod
     def concatenated_inputs(
