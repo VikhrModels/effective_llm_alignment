@@ -50,11 +50,11 @@ The implementation of the method is [here](src/trainers/smpo_trainer.py), and th
 
 ### GPO - Offline GRPO
 
-Ou own implementation of offline version of GRPO. This version does not use vLLM during training. 
+Our own implementation of offline version of GRPO. This version does not use vLLM during training. 
 
 This method is similar to KTO in that it does not require pairwise comparisons, but unlike KTO, formulas from GRPO are used, as well as rewards can be any float and the number of completions (group size) per prompt is unlimited.
 
-It requires prepared dataset with columns [`prompt`, `completions`, `rewards`], where `prompt` is a `List[Dict]` (OpenAI format)  `completions` is a `List[List[Dict]]` of size G and `rewards` is a `List[float]` with precompute rewards.
+It requires prepared dataset with columns [`prompt`, `completions`, `rewards`], where `prompt` is a `List[Dict]` (OpenAI format)  `completions` is a `List[List[Dict]]` of size G and `rewards` is a `List[float]` with precomputed rewards.
 
 The implementation of the method is [here](src/trainers/gpo_trainer.py), and the config is [here](src/configs/gpo_config.py).
 
@@ -157,7 +157,7 @@ Sometimes, deepspeed errors depends on Python version, on 3.10.16 everythong was
 
 ### 🏃‍♂️ Example of Running a Script from Config
 
-You need to select a DeepSpeed config + a training config + the script itself. Here’s an example command to start SFT training using YAML config:
+You need to select accelerate config + a training config + the script itself. Here’s an example command to start SFT training using YAML config:
 
 ```bash
 
