@@ -1,8 +1,9 @@
-import torch
-import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import cpu_count
+
 import faiss
-from multiprocessing import Pool, cpu_count
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import numpy as np
+import torch
 from tqdm.notebook import tqdm
 
 

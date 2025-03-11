@@ -12,27 +12,32 @@ This is a **super customizable**, **concise**, **user-friendly**, and **efficien
 - **Acceleration:** vLLM, Flash Attention, SDPA, Liger Kernel (for fused CrossEntropy in SFT)
 - **Build and Installation:** Poetry
 - **Result Logging:** Choose between wandb or clearml
+- **Unique and most stable PO methods**: SMPO and GPO (offline GRPO)
 
-### 📚 Supported Methods
-- **SFT:** With the possibility to disable loss on unwanted message roles
-- **Distillation:** Options include KL Div, JS Div, SLIM, Earth Mover, MSE, Soft CE, Cosine, Alpha-Beta Div
-- **DPO:** All TRL options (IPO, SLic-HF, RPO, etc)
-- **ORPO:** All TRL options
-- **CPO and SimPO:** All TRL options
-- **SMPO:** Our own most stable alignment method (details below)
-- **Non-pair Reward Modeling:** With margins and centring support from TRL
-- **Special prompts basket format:** Our prompts basket format (vi-basket) allows to generate dialogs with follow-ups and system-prompts.
-- **Rejection Sampling:** Effective async preference dataset generation using vLLM and RM
-- **Scoring using RM:** Anync generation and scoring of answers based on some prompts basket, using external RM and vLLM
-- **Effective FAISS Map-Reduce Deduplication:** We have tools for Map-Reduce based deduplication for dense embeddings. It can deduplicate VERY large datasets in parallel.
-- **LLM scoring using RM:** Use RM model and your dataset to caluclate RM scores statistics to compare models.
-- **NER, CLIP, Classification, STS:** Not native to this toolkit but tested (Work in Progress)
+### 📚 Supported Methods and Features
 
-### 📌 Additional Features
-- All datasets follow the **JSON lines format** and conform to Hugging Face standards (storing messages in the format ` [{'role': ..., 'content': ...}]`).
+#### LLM Alignment
+- **SFT:** With the possibility to disable loss on unwanted message roles. ([code](scripts/model_training/sft.py))
+- **DPO and ORPO:** All TRL options (IPO, SLic-HF, RPO, etc) ([code](scripts/model_training/dpo.py))
+- **CPO and SimPO:** All TRL options ([code](scripts/model_training/cpo.py))
+- **SMPO:** Our own stable alignment method (details below) ([code](scripts/model_training/smpo.py))
+- **GPO:** Unique, our own implementation of offline GRPO (details below) ([code](scripts/model_training/gpo.py))
+- **Distillation**: Custom script with many distill losses support ([code](scripts/model_training/distill.py))
+- **Gradient-based prompts training**: Our method of training prompts using real tokens from tokenizer via Gumbel-Softmax trick ([code](scripts/prompts_training/sft.py))
+
+#### Reward modeling and Classification
+- **Bradley-Terry Reward Training:** With margins and rewards centring support from TRL ([code](scripts/model_training/rewards.py))
+- **Rejection Sampling:** Effective async preference dataset generation using vLLM and RM ([code](scripts/inference/rm_rejection_sampling.py))
+- **LLM scoring using RM:** Use RM model and your dataset to caluclate RM scores statistics to compare models. ([code](scripts/inference/rm_scoring.py))
+- **Classification:** Support for multiclass/multilabel/binary classification. ([code](scripts/model_training/classification.py))
+
+#### Additional
 - The ability to **mix any number of datasets** for training, provided they use the same column names for replicas.
-- **Generation and logging** in wandb/clearml of test replicas during evaluation runs for SFT and Preference training (using `generate_eval_examples` and `num_gen_examples` options in configs).
-- **vLLM batched generation** of answers for some datasets using an OpenAI-like server.
+- All datasets follow the **JSON lines format** and conform to Hugging Face standards (storing messages in the format `[{'role': ..., 'content': ...}]`).
+- **Special prompts basket format for generation:** Our prompts basket format (vi-basket) allows to generate dialogs with follow-ups and system-prompts.
+- **Batched generation using OpenAI client**: Async batched generation, with support of follow-ups and system prompts. ([code](scripts/inference/batched_generation.py))
+- **Effective FAISS Map-Reduce Deduplication:** We have tools for Map-Reduce based deduplication for dense embeddings. It can deduplicate VERY large datasets in parallel. ([code](src/utils/embeddings_utils.py))
+- Support for freezing specific model modules for training without LoRA (see `unfreeze_layers_patterns` in [common args](src/configs/additional/common_script_args.py))
 
 ### SMPO - Simple Margin Preference Optimization
 
@@ -40,7 +45,25 @@ Our own alignment method designed for PO stability. The method is inspired by su
 
 The main idea of the method is the desire to smoothly achieve the desired margin level without forcing the model to retrain by adding a balancing SFT loss on chosen and rejected at the same time.
 
+This method is also distinguished by the presence of a separate scheduler for margin (`use_margin_schedule`in config), which provides stability in the early stages of training and prevents hacking of rewards.
+
 The implementation of the method is [here](src/trainers/smpo_trainer.py), and the config is [here](src/configs/smpo_config.py).
+
+### GPO - Offline GRPO
+
+Ou own implementation of offline version of GRPO. This version does not use vLLM during training. 
+
+This method is similar to KTO in that it does not require pairwise comparisons, but unlike KTO, formulas from GRPO are used, as well as rewards can be any float and the number of completions (group size) per prompt is unlimited.
+
+It requires prepared dataset with columns [`prompt`, `completions`, `rewards`], where `prompt` is a `List[Dict]` (OpenAI format)  `completions` is a `List[List[Dict]]` of size G and `rewards` is a `List[float]` with precompute rewards.
+
+The implementation of the method is [here](src/trainers/gpo_trainer.py), and the config is [here](src/configs/gpo_config.py).
+
+### Prompts Optimization
+
+Our own method of training system (any role) prompts (using real tokens from tokenizer) using gradient-based method via Gumbel-Softmax trick.
+
+The implementation of the method is [here](scripts/prompts_training/sft.py), and the config is [here](src/configs/prompts_optimization_comfig.py).
 
 ## 🚀 How to Use
 
@@ -139,7 +162,7 @@ You need to select a DeepSpeed config + a training config + the script itself. H
 
 ```bash
 
-PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/stage2_config.yaml scripts/sft.py training_configs/sft/sft-llama-3.1-8b-it-lora-GrandmasterRAG-v1.yaml
+PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/fsdp_gradop_config.yaml scripts/sft.py training_configs/sft/sft-phi4-lora-GrandmasterRAG-v4.yaml
 ```
 
 ### 📝 YAML config examples
