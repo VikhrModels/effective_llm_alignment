@@ -12,11 +12,10 @@ This is a **super customizable**, **concise**, **user-friendly**, and **efficien
 - **Acceleration:** vLLM, Flash Attention, SDPA, Liger Kernel (for fused CrossEntropy in SFT)
 - **Build and Installation:** Poetry
 - **Result Logging:** Choose between wandb or clearml
-- **Unique and most stable PO methods**: SMPO and GPO (offline GRPO)
 
-### 📚 Supported Methods and Features
+## 📚 Supported Methods and Features
 
-#### LLM Alignment
+### LLM Alignment
 - **SFT:** With the possibility to disable loss on unwanted message roles. ([code](scripts/model_training/sft.py))
 - **DPO and ORPO:** All TRL options (IPO, SLic-HF, RPO, etc) ([code](scripts/model_training/dpo.py))
 - **CPO and SimPO:** All TRL options ([code](scripts/model_training/cpo.py))
@@ -25,13 +24,13 @@ This is a **super customizable**, **concise**, **user-friendly**, and **efficien
 - **Distillation**: Custom script with many distill losses support ([code](scripts/model_training/distill.py))
 - **Gradient-based prompts training**: Our method of training prompts using real tokens from tokenizer via Gumbel-Softmax trick ([code](scripts/prompts_training/sft.py))
 
-#### Reward modeling and Classification
+### Reward modeling and Classification
 - **Bradley-Terry Reward Training:** With margins and rewards centring support from TRL ([code](scripts/model_training/rewards.py))
 - **Rejection Sampling:** Effective async preference dataset generation using vLLM and RM ([code](scripts/inference/rm_rejection_sampling.py))
 - **LLM scoring using RM:** Use RM model and your dataset to caluclate RM scores statistics to compare models. ([code](scripts/inference/rm_scoring.py))
 - **Classification:** Support for multiclass/multilabel/binary classification. ([code](scripts/model_training/classification.py))
 
-#### Additional
+### Additional
 - The ability to **mix any number of datasets** for training, provided they use the same column names for replicas.
 - All datasets follow the **JSON lines format** and conform to Hugging Face standards (storing messages in the format `[{'role': ..., 'content': ...}]`).
 - **Special prompts basket format for generation:** Our prompts basket format (vi-basket) allows to generate dialogs with follow-ups and system-prompts.
