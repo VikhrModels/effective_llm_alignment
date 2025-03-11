@@ -1,10 +1,10 @@
 import inspect
-import random
 import warnings
 from collections import defaultdict
 from contextlib import nullcontext
 from functools import wraps
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Tuple, Union
+from typing import Dict, Literal, Optional
 
 import numpy as np
 import torch
@@ -12,7 +12,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from accelerate import PartialState
 from datasets import Dataset
-from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
     DataCollator,
@@ -21,16 +20,9 @@ from transformers import (
     Trainer,
     is_wandb_available,
 )
-from trl.trainer import CPOTrainer
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput
-from transformers.utils import is_torch_fx_proxy, is_peft_available
-
-from dataclasses import dataclass
-from typing import Dict, Literal, Optional
-
-from transformers import TrainingArguments
-
+from transformers.utils import is_peft_available
 from trl.trainer.utils import (
     DPODataCollatorWithPadding,
     disable_dropout_in_model,
@@ -39,13 +31,14 @@ from trl.trainer.utils import (
     trl_sanitze_kwargs_for_tagging,
 )
 
+from src.callbacks.attr_scheduling import VariableSchedulerCallback
 from src.configs.smpo_config import SimpleMarginPOConfig
 
 if is_peft_available():
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 if is_wandb_available():
-    import wandb
+    pass
 
 
 class SimpleMarginPOTrainer(Trainer):
@@ -192,12 +185,6 @@ class SimpleMarginPOTrainer(Trainer):
                     make_inputs_require_grad
                 )
 
-        if args.generate_during_eval and not is_wandb_available():
-            raise ValueError(
-                "`generate_during_eval=True` requires Weights and Biases to be installed."
-                " Please install `wandb` to resolve."
-            )
-
         if model is not None:
             self.is_encoder_decoder = model.config.is_encoder_decoder
         elif args.is_encoder_decoder is None:
@@ -268,7 +255,6 @@ class SimpleMarginPOTrainer(Trainer):
             disable_dropout_in_model(model)
 
         self.max_length = max_length
-        self.generate_during_eval = args.generate_during_eval
         self.label_pad_token_id = args.label_pad_token_id
         self.padding_value = (
             args.padding_value
@@ -281,8 +267,7 @@ class SimpleMarginPOTrainer(Trainer):
         self.tokenizer = tokenizer
 
         self.beta = args.beta
-        self.margin_min = args.margin_min
-        self.margin_delta = args.margin_delta
+        self.target_margin = args.target_margin
         self.chosen_sft_ratio = args.chosen_sft_ratio
         self.loss_type = args.loss_type
         self.lower_clip_percentile = args.lower_clip_percentile
@@ -290,25 +275,18 @@ class SimpleMarginPOTrainer(Trainer):
         self.min_log_prob = args.min_log_prob
         self.special_token_id = self.tokenizer.eos_token_id
 
-        assert args.margin_delta >= 0, "margin_delta must be greater or equal to 0"
-        assert args.margin_min >= 0, "margin_min must be greater or equal to 0"
+        assert args.target_margin >= 0, "target_margin must be greater or equal to 0"
         if args.lower_clip_percentile is not None:
             assert (
                 args.lower_clip_percentile > 0 and args.lower_clip_percentile <= 0.5
             ), "lower_trim_percentile must > 0 and <= 0.5"
         if args.upper_clip_percentile is not None:
             assert (
-                args.upper_clip_percentile < 1 and args.upper_trim_percentile >= 0.5
+                args.upper_clip_percentile < 1 and args.upper_clip_percentile >= 0.5
             ), "lower_trim_percentile must < 1 and >= 0.5"
         if args.min_log_prob is not None:
             assert args.min_log_prob < 0, (
                 "min_log_prob must be below zero, recommended value: -2.3"
-            )
-
-        if args.margin_delta > 0 and args.loss_type != "smooth_double_bound":
-            warnings.warn(
-                f"You passed the parameter 'margin_delta' > 0, which is not supported with the selected loss_type {args.loss_type}!"
-                f" It only works with 'smooth_double_bound' loss_type."
             )
 
         self._stored_metrics = defaultdict(lambda: defaultdict(list))
@@ -326,6 +304,17 @@ class SimpleMarginPOTrainer(Trainer):
                     num_proc=args.dataset_num_proc,
                     keep_in_memory=True,
                 )
+
+        if args.use_margin_schedule:
+            callbacks.append(
+                VariableSchedulerCallback(
+                    attribute_name="target_margin",
+                    initial_value=0.01,
+                    final_value=self.target_margin,
+                    schedule_type="linear",
+                    target="trainer",
+                )
+            )
 
         super().__init__(
             model=model,
@@ -731,8 +720,7 @@ class SimpleMarginPOTrainer(Trainer):
         pi_logratios = policy_chosen_logps - policy_rejected_logps
         pi_logratios = pi_logratios.to(self.accelerator.device)
 
-        logits_lower_bound = pi_logratios - self.margin_min
-        logits_upper_bound = logits_lower_bound - self.margin_delta
+        logits_lower_bound = pi_logratios - self.target_margin
 
         if self.loss_type == "sigmoid":
             losses = -F.logsigmoid(self.beta * logits_lower_bound)
@@ -742,13 +730,9 @@ class SimpleMarginPOTrainer(Trainer):
             losses = (self.beta * logits_lower_bound).pow(2)
         elif self.loss_type == "smooth_lower_bound":
             losses = torch.relu(-self.beta * logits_lower_bound).pow(2)
-        elif self.loss_type == "smooth_double_bound":
-            losses = torch.relu(-self.beta * logits_lower_bound).pow(2) + torch.relu(
-                self.beta * logits_upper_bound
-            ).pow(2)
         else:
             raise ValueError(
-                f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid', 'hinge', 'ipo', 'smooth_lower_bound', 'smooth_double_bound']"
+                f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid', 'hinge', 'ipo', 'smooth_lower_bound']"
             )
 
         chosen_rewards = (
@@ -827,44 +811,6 @@ class SimpleMarginPOTrainer(Trainer):
             rejected_labels,
         )
 
-    # @staticmethod
-    # def get_batch_logps(
-    #     logits: torch.FloatTensor,
-    #     labels: torch.LongTensor,
-    #     average_log_prob: bool = True,
-    #     label_pad_token_id: int = -100,
-    #     is_encoder_decoder: bool = False,
-    # ) -> torch.FloatTensor:
-    #     """Compute the log probabilities of the given labels under the given logits.
-
-    #     Args:
-    #         logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
-    #         labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
-    #         average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-    #         label_pad_token_id: The label pad token id.
-    #         is_encoder_decoder: Whether the model is an encoder-decoder model.
-
-    #     Returns:
-    #         A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
-    #     """
-    #     if logits.shape[:-1] != labels.shape:
-    #         raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-
-    #     if not is_encoder_decoder:
-    #         labels = labels[:, 1:].clone()
-    #         logits = logits[:, :-1, :]
-    #     loss_mask = labels != label_pad_token_id
-
-    #     # dummy tokens; we'll ignore the losses on these tokens later
-    #     labels[(labels == label_pad_token_id)] = 0
-
-    #     per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
-
-    #     if average_log_prob:
-    #         return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
-    #     else:
-    #         return (per_token_logps * loss_mask).sum(-1)
-
     @staticmethod
     def get_batch_logps(
         logits: torch.FloatTensor,
@@ -890,6 +836,7 @@ class SimpleMarginPOTrainer(Trainer):
 
         labels[(labels == label_pad_token_id)] = 0
 
+        # TODO: replace with selective_log_softmax from trl
         per_token_logps = torch.gather(
             logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
         ).squeeze(2)
@@ -1012,6 +959,9 @@ class SimpleMarginPOTrainer(Trainer):
         metrics[f"{prefix}rewards/margins"] = (
             (chosen_rewards - rejected_rewards).mean().cpu()
         )
+        if self.args.use_margin_schedule:
+            metrics[f"{prefix}rewards/target_margin"] = self.target_margin
+
         metrics[f"{prefix}logps/rejected"] = policy_rejected_logps.detach().mean().cpu()
         metrics[f"{prefix}logps/chosen"] = policy_chosen_logps.detach().mean().cpu()
         metrics[f"{prefix}logits/rejected"] = (

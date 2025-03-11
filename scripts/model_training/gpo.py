@@ -14,14 +14,13 @@ from trl import ModelConfig, get_peft_config
 
 from src.callbacks.generate_examples import GenerateExamplesCallback
 from src.callbacks.training_parameters_callback import ParameterStatsCallback
-from src.configs.additional.smpo_args import SMPOScriptArguments
-from src.configs.smpo_config import SimpleMarginPOConfig
-from src.trainers.smpo_trainer import SimpleMarginPOTrainer
+from src.configs.additional.gpo_args import GPOScriptArguments
+from src.configs.gpo_config import GroupedPOConfig
+from src.trainers.gpo_trainer import GroupedPOTrainer
 from src.utils.datasets import load_datasets, prepare_generative_row
 from src.utils.logger import setup_logging
 from src.utils.model_preparation import setup_model_and_tokenizer, unfreeze_modules_by_patterns
 from src.utils.yaml_args_parser import H4ArgumentParser
-
 
 logger = get_logger(__name__)
 
@@ -35,11 +34,11 @@ DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
 
 
 def main():
-    parser = H4ArgumentParser((SMPOScriptArguments, SimpleMarginPOConfig, ModelConfig))
-    args, smpo_config, model_config = parser.parse()
+    parser = H4ArgumentParser((GPOScriptArguments, GroupedPOConfig, ModelConfig))
+    args, gpo_config, model_config = parser.parse()
 
-    setup_logging(logger, smpo_config)
-    set_seed(smpo_config.seed)  # in case of new tokens added without initialize...
+    setup_logging(logger, gpo_config)
+    set_seed(gpo_config.seed)  # in case of new tokens added without initialize...
 
     os.environ["WANDB_PROJECT"] = args.project_name
     os.environ['CLEARML_PROJECT'] = args.project_name
@@ -50,7 +49,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_config.model_name_or_path,
-        torch_dtype=torch.bfloat16 if smpo_config.bf16 else torch.float16,
+        torch_dtype=torch.bfloat16 if gpo_config.bf16 else torch.float16,
         attn_implementation=model_config.attn_implementation
     )
 
@@ -87,8 +86,7 @@ def main():
 
     def apply_chat_templates(row):
         row["prompt"] = tokenizer.apply_chat_template(row["prompt"], tokenize=False)
-        row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
-        row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
+        row["completions"] = [tokenizer.apply_chat_template(chosen, tokenize=False) for chosen in row["completions"]]
         return row
 
     with PartialState().main_process_first():
@@ -99,7 +97,7 @@ def main():
             load_from_cache_file=True
         )
         generate_dataset = generate_dataset.map(
-            partial(prepare_generative_row, tokenizer=tokenizer, max_length=smpo_config.max_prompt_length),
+            partial(prepare_generative_row, tokenizer=tokenizer, max_length=gpo_config.max_prompt_length),
             num_proc=DATASET_PROCESSING_THREADS,
             keep_in_memory=True,
             load_from_cache_file=True
@@ -121,7 +119,7 @@ def main():
         tokenizer=tokenizer,
         num_examples=args.num_gen_examples,
         is_deepspeed_zero3=is_deepspeed_zero3_enabled(),
-        logger_backend=smpo_config.report_to[0]
+        logger_backend=gpo_config.report_to[0]
     )
 
     PartialState().wait_for_everyone()
@@ -129,12 +127,12 @@ def main():
     ################
     # Training
     ################
-    trainer = SimpleMarginPOTrainer(
+    trainer = GroupedPOTrainer(
         model,
-        args=smpo_config,
+        args=gpo_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         peft_config=peft_config,
         callbacks=[generate_callback, ParameterStatsCallback] if args.generate_eval_examples else [ParameterStatsCallback]
     )
@@ -145,7 +143,7 @@ def main():
     if trainer.is_fsdp_enabled:
         trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
 
-    trainer.save_model(smpo_config.output_dir)
+    trainer.save_model(gpo_config.output_dir)
 
 
 if __name__ == '__main__':

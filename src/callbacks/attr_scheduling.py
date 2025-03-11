@@ -1,4 +1,5 @@
 import math
+from typing import Literal
 
 from transformers import TrainerCallback
 
@@ -15,6 +16,7 @@ class VariableSchedulerCallback(TrainerCallback):
         warmup_steps: int = 0,
         cycle: bool = False,
         cycle_scale: float = 1.0,
+        target: Literal["model", "trainer"] = "model",
     ):
         """
         Args:
@@ -34,6 +36,12 @@ class VariableSchedulerCallback(TrainerCallback):
         self.cycle = cycle
         self.cycle_scale = cycle_scale
         self.total_steps = None
+        self.target = target
+
+        if self.target not in ["model", "trainer"]:
+            raise ValueError(
+                f"Invalid target '{target}'. Must be 'model' or 'trainer'."
+            )
 
     def on_train_begin(self, args, state, control, **kwargs):
         self.total_steps = state.max_steps - self.warmup_steps
@@ -73,18 +81,20 @@ class VariableSchedulerCallback(TrainerCallback):
             else:
                 raise ValueError(f"Unknown schedule type: {self.schedule_type}")
 
-        # Update model attribute
-        model = kwargs.get("model")
-        if model is None:
-            return
+        # Get target object
+        target_obj = kwargs.get(self.target)
+        if not target_obj:
+            raise ValueError(f"Could not find {self.target} in callback arguments")
 
         # Handle distributed/DataParallel models
-        model_obj = model.module if hasattr(model, "module") else model
+        target_obj = target_obj.module if hasattr(target_obj, "module") else target_obj
 
-        if hasattr(model_obj, self.attribute_name):
-            setattr(model_obj, self.attribute_name, current_value)
+        if hasattr(target_obj, self.attribute_name):
+            setattr(target_obj, self.attribute_name, current_value)
         else:
-            raise AttributeError(f"Model does not have attribute {self.attribute_name}")
+            raise AttributeError(
+                f"{type(target_obj)} does not have attribute {self.attribute_name}"
+            )
 
     def get_current_value(self, model):
         """Get current value of the scheduled variable"""

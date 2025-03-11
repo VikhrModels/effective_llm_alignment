@@ -12,6 +12,7 @@ from transformers.integrations import is_deepspeed_zero3_enabled
 from trl import SFTTrainer, SFTConfig, ModelConfig, get_peft_config
 
 from src.callbacks.generate_examples import GenerateExamplesCallback
+from src.callbacks.training_parameters_callback import ParameterStatsCallback
 from src.collators.completions_only import DataCollatorForCompletionOnlyLM
 from src.configs.additional.sft_args import SFTScriptArguments
 from src.utils.datasets import load_datasets
@@ -187,7 +188,7 @@ def main():
         tokenizer=tokenizer,
         peft_config=peft_config,
         data_collator=collator,
-        callbacks=[generate_callback] if args.generate_eval_examples else []
+        callbacks=[generate_callback, ParameterStatsCallback] if args.generate_eval_examples else [ParameterStatsCallback]
     )
 
     # train and save the model
