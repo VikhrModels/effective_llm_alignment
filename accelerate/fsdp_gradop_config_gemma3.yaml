@@ -5,11 +5,12 @@ downcast_bf16: 'no'
 enable_cpu_affinity: false
 fsdp_config:
   fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_transformer_layer_cls_to_wrap: Gemma3DecoderLayer
   fsdp_backward_prefetch: BACKWARD_PRE
   fsdp_cpu_ram_efficient_loading: true
   fsdp_forward_prefetch: true
-  fsdp_offload_params: False
-  fsdp_sharding_strategy: SHARD_GRAD_OP
+  fsdp_offload_params: false
+  fsdp_sharding_strategy: FULL_SHARD
   fsdp_state_dict_type: FULL_STATE_DICT
   fsdp_sync_module_states: true
   fsdp_use_orig_params: true
