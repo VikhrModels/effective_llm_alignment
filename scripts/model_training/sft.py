@@ -23,13 +23,9 @@ from src.utils.yaml_args_parser import H4ArgumentParser
 
 logger = get_logger(__name__)
 
-LOGGING_TASK_NAME = str(uuid.uuid4())
-
 os.environ['WANDB_RUN_ID'] = str(random.randint(100000, 999999))
-os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
-os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
-DATASET_PROCESSING_THREADS = multiprocessing.cpu_count() // 2
+DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
 
 
 def main():
@@ -41,6 +37,9 @@ def main():
 
     os.environ["WANDB_PROJECT"] = args.project_name
     os.environ['CLEARML_PROJECT'] = args.project_name
+    
+    os.environ['WANDB_NAME'] = sft_config.run_name.split("/")[-1]
+    os.environ['CLEARML_TASK'] = sft_config.run_name.split("/")[-1]
 
     ################
     # Model & Tokenizer
@@ -52,29 +51,6 @@ def main():
         # max_position_embeddings=sft_config.max_seq_length,
         attn_implementation=model_config.attn_implementation
     )
-    if sft_config.use_liger:
-        from liger_kernel.transformers import apply_liger_kernel_to_llama, apply_liger_kernel_to_mistral, apply_liger_kernel_to_qwen2
-        apply_liger_kernel_to_llama(
-            rope=False,
-            swiglu=True,
-            cross_entropy=False,
-            fused_linear_cross_entropy=True,
-            rms_norm=True
-        )
-        apply_liger_kernel_to_mistral(
-            rope=False,
-            swiglu=True,
-            cross_entropy=False,
-            fused_linear_cross_entropy=True,
-            rms_norm=True
-        )
-        apply_liger_kernel_to_qwen2(
-            rope=False,
-            swiglu=True,
-            cross_entropy=False,
-            fused_linear_cross_entropy=True,
-            rms_norm=True
-        )
 
     setup_model_and_tokenizer(args, model, tokenizer, sft_config.max_seq_length)
 
@@ -185,7 +161,7 @@ def main():
         args=sft_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         peft_config=peft_config,
         data_collator=collator,
         callbacks=[generate_callback, ParameterStatsCallback] if args.generate_eval_examples else [ParameterStatsCallback]

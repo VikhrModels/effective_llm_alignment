@@ -119,7 +119,7 @@ def main():
         args=orpo_config,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         peft_config=peft_config,
         callbacks=[generate_callback] if args.generate_eval_examples else []
     )

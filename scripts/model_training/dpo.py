@@ -22,11 +22,7 @@ from src.utils.yaml_args_parser import H4ArgumentParser
 
 logger = get_logger(__name__)
 
-LOGGING_TASK_NAME = str(uuid.uuid4())
-
 os.environ['WANDB_RUN_ID'] = str(random.randint(100000, 999999))
-os.environ['WANDB_NAME'] = LOGGING_TASK_NAME
-os.environ['CLEARML_TASK'] = LOGGING_TASK_NAME
 
 DATASET_PROCESSING_THREADS = min(multiprocessing.cpu_count() // 2, 16)
 
@@ -40,6 +36,9 @@ def main():
 
     os.environ["WANDB_PROJECT"] = args.project_name
     os.environ['CLEARML_PROJECT'] = args.project_name
+
+    os.environ['WANDB_NAME'] = dpo_config.run_name.split("/")[-1]
+    os.environ['CLEARML_TASK'] = dpo_config.run_name.split("/")[-1]
 
     ################
     # Model & Tokenizer
@@ -132,7 +131,7 @@ def main():
         ref_model=model_ref,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         peft_config=peft_config,
         callbacks=[generate_callback] if args.generate_eval_examples else []
     )
