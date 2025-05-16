@@ -161,7 +161,7 @@ You need to select accelerate config + a training config + the script itself. He
 
 ```bash
 
-PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/fsdp_gradop_config.yaml scripts/sft.py training_configs/sft/sft-phi4-lora-GrandmasterRAG-v4.yaml
+PYTHONPATH="${PYTHONPATH}:src/" poetry run accelerate launch --config_file accelerate/fsdp_gradop_config.yaml scripts/model_training/sft.py training_configs/sft/sft-phi4-lora-GrandmasterRAG-v4.yaml
 ```
 
 ### 📝 YAML config examples
